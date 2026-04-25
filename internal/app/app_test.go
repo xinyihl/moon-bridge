@@ -2,7 +2,10 @@ package app
 
 import (
 	"bytes"
+	"path/filepath"
 	"testing"
+
+	mbtrace "moonbridge/internal/trace"
 )
 
 func TestWelcomeMessage(t *testing.T) {
@@ -21,5 +24,17 @@ func TestRunWritesWelcomeMessage(t *testing.T) {
 	want := "Welcome to Moon Bridge!\n"
 	if got := output.String(); got != want {
 		t.Fatalf("Run() wrote %q, want %q", got, want)
+	}
+}
+
+func TestCaptureTraceDirectoriesUseSession(t *testing.T) {
+	responseTracer := mbtrace.New(captureResponseTraceConfig(true))
+	if got, want := responseTracer.Directory(), filepath.Join("trace", "Capture", "Response", responseTracer.SessionID()); got != want {
+		t.Fatalf("response trace directory = %q, want %q", got, want)
+	}
+
+	anthropicTracer := mbtrace.New(captureAnthropicTraceConfig(true))
+	if got, want := anthropicTracer.Directory(), filepath.Join("trace", "Capture", "Anthropic", anthropicTracer.SessionID()); got != want {
+		t.Fatalf("anthropic trace directory = %q, want %q", got, want)
 	}
 }

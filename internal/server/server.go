@@ -163,12 +163,42 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 }
 
 func (server *Server) writeTrace(record mbtrace.Record) {
-	if server.tracer == nil {
+	if server.tracer == nil || !server.tracer.Enabled() {
 		return
 	}
-	if _, err := server.tracer.Write(record); err != nil && server.traceErrors != nil {
-		fmt.Fprintf(server.traceErrors, "trace write failed: %v\n", err)
+	requestNumber := server.tracer.NextRequestNumber()
+	if shouldWriteResponseTrace(record) {
+		server.writeTraceCategory("Response", requestNumber, mbtrace.Record{
+			HTTPRequest:        record.HTTPRequest,
+			OpenAIRequest:      record.OpenAIRequest,
+			OpenAIResponse:     record.OpenAIResponse,
+			OpenAIStreamEvents: record.OpenAIStreamEvents,
+			Error:              record.Error,
+		})
 	}
+	if shouldWriteAnthropicTrace(record) {
+		server.writeTraceCategory("Anthropic", requestNumber, mbtrace.Record{
+			HTTPRequest:           record.HTTPRequest,
+			AnthropicRequest:      record.AnthropicRequest,
+			AnthropicResponse:     record.AnthropicResponse,
+			AnthropicStreamEvents: record.AnthropicStreamEvents,
+			Error:                 record.Error,
+		})
+	}
+}
+
+func (server *Server) writeTraceCategory(category string, requestNumber uint64, record mbtrace.Record) {
+	if _, err := server.tracer.WriteNumbered(category, requestNumber, record); err != nil && server.traceErrors != nil {
+		fmt.Fprintf(server.traceErrors, "trace %s write failed: %v\n", category, err)
+	}
+}
+
+func shouldWriteResponseTrace(record mbtrace.Record) bool {
+	return record.OpenAIRequest != nil || record.OpenAIResponse != nil || record.OpenAIStreamEvents != nil
+}
+
+func shouldWriteAnthropicTrace(record mbtrace.Record) bool {
+	return record.AnthropicRequest != nil || record.AnthropicResponse != nil || record.AnthropicStreamEvents != nil
 }
 
 func traceError(stage string, err error) map[string]string {

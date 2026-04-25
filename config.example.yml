@@ -9,6 +9,7 @@ provider:
   base_url: "https://provider.example.com"
   api_key: "replace-with-provider-api-key"
   version: "2023-06-01"
+  user_agent: "claude-cli/2.1.112 (external, cli)"
   default_max_tokens: 1024
   default_model: "moonbridge"
   models:
@@ -32,11 +33,12 @@ cache:
 developer:
   proxy:
     response:
+      model: "gpt-5.4"
       provider:
         base_url: "https://api.openai.com"
         api_key: "replace-with-real-openai-compatible-api-key"
     anthropic:
-      model: "provider-model-name"
+      model: "" # optional; leave empty to use Claude Code settings/default model
       provider:
         base_url: "https://provider.example.com"
         api_key: "replace-with-real-anthropic-compatible-api-key"

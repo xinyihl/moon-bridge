@@ -13,17 +13,19 @@ import (
 )
 
 type ClientConfig struct {
-	BaseURL string
-	APIKey  string
-	Version string
-	Client  *http.Client
+	BaseURL   string
+	APIKey    string
+	Version   string
+	UserAgent string
+	Client    *http.Client
 }
 
 type Client struct {
-	baseURL string
-	apiKey  string
-	version string
-	client  *http.Client
+	baseURL   string
+	apiKey    string
+	version   string
+	userAgent string
+	client    *http.Client
 }
 
 type ProviderError struct {
@@ -51,10 +53,11 @@ func NewClient(cfg ClientConfig) *Client {
 		httpClient = http.DefaultClient
 	}
 	return &Client{
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		apiKey:  cfg.APIKey,
-		version: cfg.Version,
-		client:  httpClient,
+		baseURL:   strings.TrimRight(cfg.BaseURL, "/"),
+		apiKey:    cfg.APIKey,
+		version:   cfg.Version,
+		userAgent: strings.TrimSpace(cfg.UserAgent),
+		client:    httpClient,
 	}
 }
 
@@ -117,6 +120,9 @@ func (client *Client) newRequest(ctx context.Context, messageRequest MessageRequ
 	httpRequest.Header.Set("x-api-key", client.apiKey)
 	if client.version != "" {
 		httpRequest.Header.Set("anthropic-version", client.version)
+	}
+	if client.userAgent != "" {
+		httpRequest.Header.Set("user-agent", client.userAgent)
 	}
 	return httpRequest, nil
 }

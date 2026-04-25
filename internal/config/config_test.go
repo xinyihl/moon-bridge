@@ -14,6 +14,7 @@ mode: Transform
 provider:
   base_url: https://provider.example.test
   api_key: upstream-key
+  user_agent: Bun/1.3.13
   default_model: gpt-test
   models:
     gpt-test:
@@ -39,6 +40,9 @@ trace_requests: true
 	}
 	if cfg.ProviderVersion != "2023-06-01" {
 		t.Fatalf("ProviderVersion = %q", cfg.ProviderVersion)
+	}
+	if cfg.ProviderUserAgent != "Bun/1.3.13" {
+		t.Fatalf("ProviderUserAgent = %q", cfg.ProviderUserAgent)
 	}
 	if cfg.DefaultMaxTokens != 1024 {
 		t.Fatalf("DefaultMaxTokens = %d", cfg.DefaultMaxTokens)
@@ -153,6 +157,7 @@ trace_requests: true
 developer:
   proxy:
     response:
+      model: gpt-capture
       provider:
         base_url: https://api.openai.example.test
         api_key: upstream-openai-key
@@ -162,6 +167,9 @@ developer:
 	}
 	if !cfg.TraceRequests {
 		t.Fatal("TraceRequests = false, want true")
+	}
+	if cfg.ResponseProxy.Model != "gpt-capture" {
+		t.Fatalf("Model = %q", cfg.ResponseProxy.Model)
 	}
 	if cfg.ResponseProxy.ProviderBaseURL != "https://api.openai.example.test" {
 		t.Fatalf("ProviderBaseURL = %q", cfg.ResponseProxy.ProviderBaseURL)
@@ -211,6 +219,32 @@ func TestDefaultModelAliasFallsBackToMoonbridge(t *testing.T) {
 	}}
 	if got := cfg.DefaultModelAlias(); got != "moonbridge" {
 		t.Fatalf("DefaultModelAlias() = %q", got)
+	}
+}
+
+func TestCodexModelUsesResponseProxyModelInCaptureResponse(t *testing.T) {
+	cfg := config.Config{
+		Mode:         config.ModeCaptureResponse,
+		DefaultModel: "moonbridge",
+		ResponseProxy: config.ResponseProxyConfig{
+			Model: "gpt-capture",
+		},
+	}
+	if got := cfg.CodexModel(); got != "gpt-capture" {
+		t.Fatalf("CodexModel() = %q", got)
+	}
+}
+
+func TestCodexModelUsesDefaultModelInTransform(t *testing.T) {
+	cfg := config.Config{
+		Mode:         config.ModeTransform,
+		DefaultModel: "moonbridge",
+		ResponseProxy: config.ResponseProxyConfig{
+			Model: "gpt-capture",
+		},
+	}
+	if got := cfg.CodexModel(); got != "moonbridge" {
+		t.Fatalf("CodexModel() = %q", got)
 	}
 }
 

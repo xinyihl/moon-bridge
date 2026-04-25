@@ -92,11 +92,13 @@ func TestResponseProxyPassesHeadersThroughAndCapturesTrace(t *testing.T) {
 
 func TestAnthropicProxyPassesHeadersThrough(t *testing.T) {
 	var upstreamPath string
+	var upstreamAuth string
 	var upstreamAPIKey string
 	var upstreamVersion string
 	var upstreamUserAgent string
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		upstreamPath = request.URL.RequestURI()
+		upstreamAuth = request.Header.Get("Authorization")
 		upstreamAPIKey = request.Header.Get("X-Api-Key")
 		upstreamVersion = request.Header.Get("Anthropic-Version")
 		upstreamUserAgent = request.Header.Get("User-Agent")
@@ -118,6 +120,7 @@ func TestAnthropicProxyPassesHeadersThrough(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude","messages":[]}`))
+	request.Header.Set("Authorization", "Bearer client-placeholder-token")
 	request.Header.Set("X-Api-Key", "client-anthropic-key")
 	request.Header.Set("Anthropic-Version", "2023-01-01")
 	request.Header.Set("User-Agent", "anthropic-sdk-test")
@@ -130,6 +133,9 @@ func TestAnthropicProxyPassesHeadersThrough(t *testing.T) {
 	}
 	if upstreamPath != "/v1/messages" {
 		t.Fatalf("upstream path = %q", upstreamPath)
+	}
+	if upstreamAuth != "" {
+		t.Fatalf("upstream auth = %q, want empty", upstreamAuth)
 	}
 	if upstreamAPIKey != "upstream-anthropic-key" {
 		t.Fatalf("upstream api key = %q", upstreamAPIKey)

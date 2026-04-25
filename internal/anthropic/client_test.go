@@ -28,6 +28,9 @@ func TestClientCreateMessageSendsHeadersAndParsesResponse(t *testing.T) {
 		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
 			t.Fatalf("anthropic-version = %q", got)
 		}
+		if got := r.Header.Get("user-agent"); got != "Bun/1.3.13" {
+			t.Fatalf("user-agent = %q", got)
+		}
 
 		var request anthropic.MessageRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -54,10 +57,11 @@ func TestClientCreateMessageSendsHeadersAndParsesResponse(t *testing.T) {
 	})}
 
 	client := anthropic.NewClient(anthropic.ClientConfig{
-		BaseURL: "https://provider.example.test",
-		APIKey:  "upstream-key",
-		Version: "2023-06-01",
-		Client:  httpClient,
+		BaseURL:   "https://provider.example.test",
+		APIKey:    "upstream-key",
+		Version:   "2023-06-01",
+		UserAgent: "Bun/1.3.13",
+		Client:    httpClient,
 	})
 
 	response, err := client.CreateMessage(context.Background(), anthropic.MessageRequest{

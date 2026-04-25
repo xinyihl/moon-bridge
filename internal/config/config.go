@@ -24,22 +24,24 @@ const (
 )
 
 type Config struct {
-	Mode             Mode
-	Addr             string
-	TraceRequests    bool
-	DefaultModel     string
-	ProviderBaseURL  string
-	ProviderAPIKey   string
-	ProviderVersion  string
-	DefaultMaxTokens int
-	ModelMap         map[string]string
-	ProviderModels   map[string]ProviderModelConfig
-	Cache            CacheConfig
-	ResponseProxy    ResponseProxyConfig
-	AnthropicProxy   AnthropicProxyConfig
+	Mode              Mode
+	Addr              string
+	TraceRequests     bool
+	DefaultModel      string
+	ProviderBaseURL   string
+	ProviderAPIKey    string
+	ProviderVersion   string
+	ProviderUserAgent string
+	DefaultMaxTokens  int
+	ModelMap          map[string]string
+	ProviderModels    map[string]ProviderModelConfig
+	Cache             CacheConfig
+	ResponseProxy     ResponseProxyConfig
+	AnthropicProxy    AnthropicProxyConfig
 }
 
 type ResponseProxyConfig struct {
+	Model           string
 	ProviderBaseURL string
 	ProviderAPIKey  string
 }
@@ -87,6 +89,7 @@ type ProviderFileConfig struct {
 	BaseURL          string                             `yaml:"base_url"`
 	APIKey           string                             `yaml:"api_key"`
 	Version          string                             `yaml:"version"`
+	UserAgent        string                             `yaml:"user_agent"`
 	DefaultMaxTokens int                                `yaml:"default_max_tokens"`
 	DefaultModel     string                             `yaml:"default_model"`
 	Models           map[string]ProviderModelFileConfig `yaml:"models"`
@@ -164,19 +167,20 @@ func FromFileConfig(fileConfig FileConfig) (Config, error) {
 	}
 	providerModels := FromProviderModelFileConfig(fileConfig.Provider.Models)
 	cfg := Config{
-		Mode:             mode,
-		Addr:             valueOrDefault(strings.TrimSpace(fileConfig.Server.Addr), DefaultAddr),
-		TraceRequests:    fileConfig.TraceRequests,
-		DefaultModel:     strings.TrimSpace(fileConfig.Provider.DefaultModel),
-		ProviderBaseURL:  strings.TrimRight(strings.TrimSpace(fileConfig.Provider.BaseURL), "/"),
-		ProviderAPIKey:   strings.TrimSpace(fileConfig.Provider.APIKey),
-		ProviderVersion:  valueOrDefault(strings.TrimSpace(fileConfig.Provider.Version), "2023-06-01"),
-		DefaultMaxTokens: intOrDefault(fileConfig.Provider.DefaultMaxTokens, 1024),
-		ModelMap:         providerModelMap(providerModels),
-		ProviderModels:   providerModels,
-		Cache:            fromCacheFileConfig(fileConfig.Cache),
-		ResponseProxy:    FromResponseProxyFileConfig(fileConfig.Developer.Proxy.Response),
-		AnthropicProxy:   FromAnthropicProxyFileConfig(fileConfig.Developer.Proxy.Anthropic),
+		Mode:              mode,
+		Addr:              valueOrDefault(strings.TrimSpace(fileConfig.Server.Addr), DefaultAddr),
+		TraceRequests:     fileConfig.TraceRequests,
+		DefaultModel:      strings.TrimSpace(fileConfig.Provider.DefaultModel),
+		ProviderBaseURL:   strings.TrimRight(strings.TrimSpace(fileConfig.Provider.BaseURL), "/"),
+		ProviderAPIKey:    strings.TrimSpace(fileConfig.Provider.APIKey),
+		ProviderVersion:   valueOrDefault(strings.TrimSpace(fileConfig.Provider.Version), "2023-06-01"),
+		ProviderUserAgent: strings.TrimSpace(fileConfig.Provider.UserAgent),
+		DefaultMaxTokens:  intOrDefault(fileConfig.Provider.DefaultMaxTokens, 1024),
+		ModelMap:          providerModelMap(providerModels),
+		ProviderModels:    providerModels,
+		Cache:             fromCacheFileConfig(fileConfig.Cache),
+		ResponseProxy:     FromResponseProxyFileConfig(fileConfig.Developer.Proxy.Response),
+		AnthropicProxy:    FromAnthropicProxyFileConfig(fileConfig.Developer.Proxy.Anthropic),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -232,6 +236,7 @@ func (cfg Config) validateTransform() error {
 
 func FromResponseProxyFileConfig(fileConfig ProxyFileConfig) ResponseProxyConfig {
 	return ResponseProxyConfig{
+		Model:           strings.TrimSpace(fileConfig.Model),
 		ProviderBaseURL: strings.TrimRight(strings.TrimSpace(fileConfig.Provider.BaseURL), "/"),
 		ProviderAPIKey:  strings.TrimSpace(fileConfig.Provider.APIKey),
 	}
@@ -327,6 +332,13 @@ func (cfg Config) DefaultModelAlias() string {
 		}
 	}
 	return ""
+}
+
+func (cfg Config) CodexModel() string {
+	if cfg.Mode == ModeCaptureResponse && cfg.ResponseProxy.Model != "" {
+		return cfg.ResponseProxy.Model
+	}
+	return cfg.DefaultModelAlias()
 }
 
 func (cfg *Config) OverrideAddr(addr string) {

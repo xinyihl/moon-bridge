@@ -33,6 +33,7 @@ type Tool struct {
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
 	Format      map[string]any `json:"format,omitempty"`
+	Tools       []Tool         `json:"tools,omitempty"`
 }
 
 type Response struct {

@@ -105,6 +105,7 @@ func (server *AnthropicServer) serveProxy(writer http.ResponseWriter, request *h
 }
 
 func (server *AnthropicServer) overrideAuth(headers http.Header) {
+	headers.Del("Authorization")
 	if server.apiKey != "" {
 		headers.Set("X-Api-Key", server.apiKey)
 	}

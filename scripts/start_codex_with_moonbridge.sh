@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  echo "Do not source this script; run it as ./scripts/start_codex_with_moonbridge.sh to avoid polluting your shell." >&2
+  return 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="${MOONBRIDGE_CONFIG:-"${ROOT_DIR}/config.yml"}"
 CODEX_HOME_DIR="${ROOT_DIR}/FakeHome/Codex"
@@ -89,14 +94,18 @@ echo "Building Moon Bridge"
 )
 
 MODE="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-mode)"
-if [[ "$MODE" != "Transform" ]]; then
-  echo "config.yml mode must be Transform for Codex, got: ${MODE}" >&2
-  exit 1
-fi
+case "$MODE" in
+  Transform|CaptureResponse)
+    ;;
+  *)
+    echo "config.yml mode must be Transform or CaptureResponse for Codex, got: ${MODE}" >&2
+    exit 1
+    ;;
+esac
 
-MODEL_ALIAS="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-default-model)"
+MODEL_ALIAS="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-codex-model)"
 if [[ -z "$MODEL_ALIAS" ]]; then
-  echo "provider.default_model is required when multiple provider.models are configured" >&2
+  echo "provider.default_model or developer.proxy.response.model is required for Codex" >&2
   exit 1
 fi
 
@@ -124,6 +133,7 @@ export MOONBRIDGE_CLIENT_API_KEY="${MOONBRIDGE_CLIENT_API_KEY:-local-dev}"
 
 echo "Starting Codex with CODEX_HOME=${CODEX_HOME_DIR}"
 echo "Workspace: ${ROOT_DIR}"
+echo "Mode: ${MODE}"
 echo "Model: ${MODEL_ALIAS}"
 
 codex_args=(

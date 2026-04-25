@@ -238,33 +238,24 @@ func (bridge *Bridge) convertInput(raw json.RawMessage) ([]anthropic.Message, []
 			if len(toolInput) == 0 {
 				toolInput = json.RawMessage(`{}`)
 			}
-			messages = append(messages, anthropic.Message{
-				Role: "assistant",
-				Content: []anthropic.ContentBlock{{
-					Type:  "tool_use",
-					ID:    firstNonEmpty(item.CallID, item.ID),
-					Name:  item.Name,
-					Input: toolInput,
-				}},
+			appendAssistantBlock(&messages, anthropic.ContentBlock{
+				Type:  "tool_use",
+				ID:    firstNonEmpty(item.CallID, item.ID),
+				Name:  item.Name,
+				Input: toolInput,
 			})
 		case item.Type == "local_shell_call":
-			messages = append(messages, anthropic.Message{
-				Role: "assistant",
-				Content: []anthropic.ContentBlock{{
-					Type:  "tool_use",
-					ID:    firstNonEmpty(item.CallID, item.ID),
-					Name:  "local_shell",
-					Input: localShellInputFromAction(item.Action),
-				}},
+			appendAssistantBlock(&messages, anthropic.ContentBlock{
+				Type:  "tool_use",
+				ID:    firstNonEmpty(item.CallID, item.ID),
+				Name:  "local_shell",
+				Input: localShellInputFromAction(item.Action),
 			})
 		case strings.HasSuffix(item.Type, "_output") || item.Type == "function_call_output":
-			messages = append(messages, anthropic.Message{
-				Role: "user",
-				Content: []anthropic.ContentBlock{{
-					Type:      "tool_result",
-					ToolUseID: firstNonEmpty(item.CallID, item.ID),
-					Content:   item.Output,
-				}},
+			appendToolResultBlock(&messages, anthropic.ContentBlock{
+				Type:      "tool_result",
+				ToolUseID: firstNonEmpty(item.CallID, item.ID),
+				Content:   item.Output,
 			})
 		case item.Role == "system" || item.Role == "developer":
 			system = append(system, contentBlocksFromRaw(item.Content)...)
@@ -286,14 +277,7 @@ func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error
 	for index, tool := range tools {
 		switch tool.Type {
 		case "function":
-			if tool.Parameters == nil {
-				tool.Parameters = map[string]any{"type": "object"}
-			}
-			converted = append(converted, anthropic.Tool{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: tool.Parameters,
-			})
+			converted = append(converted, anthropicToolFromOpenAIFunction(tool.Name, tool.Description, tool.Parameters))
 		case "local_shell":
 			converted = append(converted, anthropic.Tool{
 				Name:        "local_shell",
@@ -310,6 +294,17 @@ func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error
 					"required":   []string{"input"},
 				},
 			})
+		case "namespace":
+			for _, child := range tool.Tools {
+				if child.Type != "function" {
+					continue
+				}
+				converted = append(converted, anthropicToolFromOpenAIFunction(
+					namespacedToolName(tool.Name, child.Name),
+					child.Description,
+					child.Parameters,
+				))
+			}
 		case "web_search", "web_search_preview", "file_search", "computer_use_preview", "image_generation":
 			continue
 		default:
@@ -322,6 +317,30 @@ func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error
 		}
 	}
 	return converted, nil
+}
+
+func anthropicToolFromOpenAIFunction(name string, description string, parameters map[string]any) anthropic.Tool {
+	if parameters == nil {
+		parameters = map[string]any{"type": "object"}
+	}
+	return anthropic.Tool{
+		Name:        name,
+		Description: description,
+		InputSchema: parameters,
+	}
+}
+
+func namespacedToolName(namespace string, name string) string {
+	if namespace == "" {
+		return name
+	}
+	if name == "" {
+		return namespace
+	}
+	if strings.HasSuffix(namespace, "_") || strings.HasPrefix(name, "_") {
+		return namespace + name
+	}
+	return namespace + "_" + name
 }
 
 func (bridge *Bridge) convertToolChoice(raw json.RawMessage) (anthropic.ToolChoice, error) {
@@ -477,6 +496,36 @@ func contentBlocksFromRaw(raw json.RawMessage) []anthropic.ContentBlock {
 		}
 	}
 	return []anthropic.ContentBlock{{Type: "text", Text: trimmed}}
+}
+
+func appendAssistantBlock(messages *[]anthropic.Message, block anthropic.ContentBlock) {
+	lastIndex := len(*messages) - 1
+	if lastIndex >= 0 && (*messages)[lastIndex].Role == "assistant" {
+		(*messages)[lastIndex].Content = append((*messages)[lastIndex].Content, block)
+		return
+	}
+	*messages = append(*messages, anthropic.Message{Role: "assistant", Content: []anthropic.ContentBlock{block}})
+}
+
+func appendToolResultBlock(messages *[]anthropic.Message, block anthropic.ContentBlock) {
+	lastIndex := len(*messages) - 1
+	if lastIndex >= 0 && (*messages)[lastIndex].Role == "user" && allContentBlocksHaveType((*messages)[lastIndex].Content, "tool_result") {
+		(*messages)[lastIndex].Content = append((*messages)[lastIndex].Content, block)
+		return
+	}
+	*messages = append(*messages, anthropic.Message{Role: "user", Content: []anthropic.ContentBlock{block}})
+}
+
+func allContentBlocksHaveType(blocks []anthropic.ContentBlock, blockType string) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, block := range blocks {
+		if block.Type != blockType {
+			return false
+		}
+	}
+	return true
 }
 
 func parseStopSequences(raw json.RawMessage) []string {

@@ -18,6 +18,7 @@ func main() {
 	printAddr := flag.Bool("print-addr", false, "Print configured listen address and exit")
 	printMode := flag.Bool("print-mode", false, "Print configured mode and exit")
 	printDefaultModel := flag.Bool("print-default-model", false, "Print configured default model alias and exit")
+	printCodexModel := flag.Bool("print-codex-model", false, "Print configured Codex model and exit")
 	printClaudeModel := flag.Bool("print-claude-model", false, "Print configured Claude Code model and exit")
 	printCodexConfig := flag.String("print-codex-config", "", "Print Codex config.toml for the model alias and exit")
 	codexBaseURL := flag.String("codex-base-url", "", "Base URL to write in generated Codex config")
@@ -52,6 +53,10 @@ func main() {
 	}
 	if *printDefaultModel {
 		fmt.Println(cfg.DefaultModelAlias())
+		return
+	}
+	if *printCodexModel {
+		fmt.Println(cfg.CodexModel())
 		return
 	}
 	if *printClaudeModel {

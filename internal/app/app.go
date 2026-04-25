@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/bridge"
@@ -48,11 +49,15 @@ func RunServer(ctx context.Context, cfg config.Config, errors io.Writer) error {
 
 func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) error {
 	anthropicClient := anthropic.NewClient(anthropic.ClientConfig{
-		BaseURL: cfg.ProviderBaseURL,
-		APIKey:  cfg.ProviderAPIKey,
-		Version: cfg.ProviderVersion,
+		BaseURL:   cfg.ProviderBaseURL,
+		APIKey:    cfg.ProviderAPIKey,
+		Version:   cfg.ProviderVersion,
+		UserAgent: cfg.ProviderUserAgent,
 	})
-	tracer := mbtrace.New(mbtrace.Config{Enabled: cfg.TraceRequests})
+	tracer := mbtrace.New(mbtrace.Config{
+		Enabled: cfg.TraceRequests,
+		Root:    transformTraceRoot(),
+	})
 	logTrace(errors, "transform", tracer)
 	handler := server.New(server.Config{
 		Bridge:      bridge.New(cfg, cache.NewMemoryRegistry()),
@@ -65,9 +70,7 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 }
 
 func runCaptureResponse(ctx context.Context, cfg config.Config, errors io.Writer) error {
-	tracer := mbtrace.New(mbtrace.Config{
-		Enabled: cfg.TraceRequests,
-	})
+	tracer := mbtrace.New(captureResponseTraceConfig(cfg.TraceRequests))
 	logTrace(errors, "response proxy", tracer)
 	handler, err := proxy.NewResponse(proxy.ResponseConfig{
 		UpstreamBaseURL: cfg.ResponseProxy.ProviderBaseURL,
@@ -82,9 +85,7 @@ func runCaptureResponse(ctx context.Context, cfg config.Config, errors io.Writer
 }
 
 func runCaptureAnthropic(ctx context.Context, cfg config.Config, errors io.Writer) error {
-	tracer := mbtrace.New(mbtrace.Config{
-		Enabled: cfg.TraceRequests,
-	})
+	tracer := mbtrace.New(captureAnthropicTraceConfig(cfg.TraceRequests))
 	logTrace(errors, "anthropic proxy", tracer)
 	handler, err := proxy.NewAnthropic(proxy.AnthropicConfig{
 		UpstreamBaseURL: cfg.AnthropicProxy.ProviderBaseURL,
@@ -105,6 +106,24 @@ func logTrace(errors io.Writer, label string, tracer *mbtrace.Tracer) {
 		return
 	}
 	fmt.Fprintf(errors, "%s trace enabled at %s\n", label, tracer.Directory())
+}
+
+func transformTraceRoot() string {
+	return filepath.Join(mbtrace.DefaultRoot, "Transform")
+}
+
+func captureResponseTraceConfig(enabled bool) mbtrace.Config {
+	return mbtrace.Config{
+		Enabled: enabled,
+		Root:    filepath.Join(mbtrace.DefaultRoot, "Capture", "Response"),
+	}
+}
+
+func captureAnthropicTraceConfig(enabled bool) mbtrace.Config {
+	return mbtrace.Config{
+		Enabled: enabled,
+		Root:    filepath.Join(mbtrace.DefaultRoot, "Capture", "Anthropic"),
+	}
 }
 
 func runHTTPServer(ctx context.Context, addr string, handler http.Handler, errors io.Writer) error {

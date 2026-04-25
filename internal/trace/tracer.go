@@ -19,17 +19,19 @@ type Config struct {
 	Enabled   bool
 	Root      string
 	SessionID string
+	Flat      bool
 }
 
 type Tracer struct {
 	enabled   bool
 	root      string
 	sessionID string
+	flat      bool
 	counter   atomic.Uint64
 }
 
 type Record struct {
-	SessionID             string      `json:"session_id"`
+	SessionID             string      `json:"session_id,omitempty"`
 	RequestNumber         uint64      `json:"request_number"`
 	CapturedAt            string      `json:"captured_at"`
 	HTTPRequest           HTTPRequest `json:"http_request"`
@@ -61,7 +63,7 @@ func New(cfg Config) *Tracer {
 	if sessionID == "" {
 		sessionID = newSessionID()
 	}
-	return &Tracer{enabled: cfg.Enabled, root: root, sessionID: sessionID}
+	return &Tracer{enabled: cfg.Enabled, root: root, sessionID: sessionID, flat: cfg.Flat}
 }
 
 func (tracer *Tracer) Enabled() bool {
@@ -79,16 +81,39 @@ func (tracer *Tracer) Directory() string {
 	if tracer == nil {
 		return ""
 	}
+	if tracer.flat {
+		return tracer.root
+	}
 	return filepath.Join(tracer.root, tracer.sessionID)
 }
 
+func (tracer *Tracer) NextRequestNumber() uint64 {
+	if !tracer.Enabled() {
+		return 0
+	}
+	return tracer.counter.Add(1)
+}
+
 func (tracer *Tracer) Write(record Record) (string, error) {
+	return tracer.WriteTo("", record)
+}
+
+func (tracer *Tracer) WriteTo(category string, record Record) (string, error) {
+	return tracer.WriteNumbered(category, 0, record)
+}
+
+func (tracer *Tracer) WriteNumbered(category string, requestNumber uint64, record Record) (string, error) {
 	if !tracer.Enabled() {
 		return "", nil
 	}
 
-	record.SessionID = tracer.sessionID
-	record.RequestNumber = tracer.counter.Add(1)
+	if !tracer.flat {
+		record.SessionID = tracer.sessionID
+	}
+	if requestNumber == 0 {
+		requestNumber = tracer.NextRequestNumber()
+	}
+	record.RequestNumber = requestNumber
 	if record.CapturedAt == "" {
 		record.CapturedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
@@ -103,11 +128,14 @@ func (tracer *Tracer) Write(record Record) (string, error) {
 	}
 	data = append(data, '\n')
 
-	sessionDir := tracer.Directory()
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+	traceDir := tracer.Directory()
+	if category != "" {
+		traceDir = filepath.Join(traceDir, category)
+	}
+	if err := os.MkdirAll(traceDir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(sessionDir, fmt.Sprintf("%d.json", record.RequestNumber))
+	path := filepath.Join(traceDir, fmt.Sprintf("%d.json", record.RequestNumber))
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", err
 	}

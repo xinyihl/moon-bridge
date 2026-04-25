@@ -114,27 +114,50 @@ func TestResponsesHandlerWritesTraceFile(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	data, err := os.ReadFile(filepath.Join(traceRoot, "session-test", "1.json"))
+	responseData, err := os.ReadFile(filepath.Join(traceRoot, "session-test", "Response", "1.json"))
 	if err != nil {
-		t.Fatalf("ReadFile(trace) error = %v", err)
+		t.Fatalf("ReadFile(response trace) error = %v", err)
 	}
-	content := string(data)
-	if strings.Contains(content, "client-api-key") {
-		t.Fatalf("trace leaked API key: %s", content)
+	responseContent := string(responseData)
+	if strings.Contains(responseContent, "client-api-key") {
+		t.Fatalf("response trace leaked API key: %s", responseContent)
 	}
 	for _, want := range []string{
 		`"request_number": 1`,
 		`"openai_request"`,
 		"Hello trace debug",
+		`"openai_response"`,
+		"[REDACTED]",
+	} {
+		if !strings.Contains(responseContent, want) {
+			t.Fatalf("response trace missing %q: %s", want, responseContent)
+		}
+	}
+	for _, notWant := range []string{`"anthropic_request"`, `"anthropic_response"`} {
+		if strings.Contains(responseContent, notWant) {
+			t.Fatalf("response trace should not contain %q: %s", notWant, responseContent)
+		}
+	}
+
+	anthropicData, err := os.ReadFile(filepath.Join(traceRoot, "session-test", "Anthropic", "1.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(anthropic trace) error = %v", err)
+	}
+	anthropicContent := string(anthropicData)
+	for _, want := range []string{
+		`"request_number": 1`,
 		`"anthropic_request"`,
 		"claude-test",
 		`"anthropic_response"`,
 		"Hello from provider",
-		`"openai_response"`,
-		"[REDACTED]",
 	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("trace missing %q: %s", want, content)
+		if !strings.Contains(anthropicContent, want) {
+			t.Fatalf("anthropic trace missing %q: %s", want, anthropicContent)
+		}
+	}
+	for _, notWant := range []string{`"openai_request"`, `"openai_response"`} {
+		if strings.Contains(anthropicContent, notWant) {
+			t.Fatalf("anthropic trace should not contain %q: %s", notWant, anthropicContent)
 		}
 	}
 }
