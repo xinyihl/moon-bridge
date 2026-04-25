@@ -2,6 +2,7 @@ package bridge_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"moonbridge/internal/anthropic"
@@ -83,6 +84,132 @@ func TestConvertStreamEventsConvertsToolArguments(t *testing.T) {
 	}
 }
 
+func TestConvertStreamEventsMapsRequestCustomToolToCustomToolCall(t *testing.T) {
+	input := "replace this buffer\nwith this text\n"
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Tools: []openai.Tool{{Type: "custom", Name: "rewrite_buffer"}},
+	}
+	events := []anthropic.StreamEvent{
+		{Type: "message_start", Message: &anthropic.MessageResponse{ID: "msg_1", Type: "message", Role: "assistant"}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &anthropic.ContentBlock{
+			Type: "tool_use",
+			ID:   "tool_rewrite",
+			Name: "rewrite_buffer",
+		}},
+		{Type: "content_block_delta", Index: 0, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: `{"input":`}},
+		{Type: "content_block_delta", Index: 0, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: string(mustMarshalRaw(t, input)) + `}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
+		{Type: "message_stop"},
+	}
+
+	bridgeUnderTest := testBridge()
+	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request))
+	var customDelta openai.CustomToolCallInputDeltaEvent
+	for _, event := range converted {
+		if event.Event == "response.function_call_arguments.delta" || event.Event == "response.function_call_arguments.done" {
+			t.Fatalf("unexpected function-call argument event for custom tool: %+v", event)
+		}
+		if event.Event == "response.custom_tool_call_input.delta" {
+			customDelta = event.Data.(openai.CustomToolCallInputDeltaEvent)
+		}
+	}
+	if customDelta.Delta != input || customDelta.CallID != "tool_rewrite" {
+		t.Fatalf("custom delta = %+v", customDelta)
+	}
+
+	completed := streamLifecycleResponse(t, converted, "response.completed")
+	if len(completed.Output) != 1 {
+		t.Fatalf("completed output = %+v", completed.Output)
+	}
+	item := completed.Output[0]
+	if item.Type != "custom_tool_call" || item.CallID != "tool_rewrite" || item.Name != "rewrite_buffer" || item.Input != input {
+		t.Fatalf("completed custom item = %+v", item)
+	}
+}
+
+func TestConvertStreamEventsNormalizesApplyPatchGrammarTerminator(t *testing.T) {
+	input := "*** Begin Patch\n*** Add File: docs/api.md\n+# API\n+content\n+*** End Patch"
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Tools: []openai.Tool{{
+			Type: "custom",
+			Name: "patcher",
+			Format: map[string]any{
+				"type":       "grammar",
+				"syntax":     "lark",
+				"definition": "begin_patch: \"*** Begin Patch\"\nend_patch: \"*** End Patch\"\nadd_hunk: \"*** Add File: \"\n",
+			},
+		}},
+	}
+	events := []anthropic.StreamEvent{
+		{Type: "message_start", Message: &anthropic.MessageResponse{ID: "msg_1", Type: "message", Role: "assistant"}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &anthropic.ContentBlock{
+			Type: "tool_use",
+			ID:   "tool_patch",
+			Name: "patcher",
+		}},
+		{Type: "content_block_delta", Index: 0, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: `{"input":`}},
+		{Type: "content_block_delta", Index: 0, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: string(mustMarshalRaw(t, input)) + `}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
+		{Type: "message_stop"},
+	}
+
+	bridgeUnderTest := testBridge()
+	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request))
+	var delta openai.CustomToolCallInputDeltaEvent
+	for _, event := range converted {
+		if event.Event == "response.custom_tool_call_input.delta" {
+			delta = event.Data.(openai.CustomToolCallInputDeltaEvent)
+		}
+	}
+	if strings.Contains(delta.Delta, "+*** End Patch") || !strings.HasSuffix(delta.Delta, "*** End Patch") {
+		t.Fatalf("custom delta = %q", delta.Delta)
+	}
+	completed := streamLifecycleResponse(t, converted, "response.completed")
+	if strings.Contains(completed.Output[0].Input, "+*** End Patch") || !strings.HasSuffix(completed.Output[0].Input, "*** End Patch") {
+		t.Fatalf("custom item = %q", completed.Output[0].Input)
+	}
+}
+
+func TestConvertStreamEventsBuildsApplyPatchGrammarFromProxyOperations(t *testing.T) {
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Tools: []openai.Tool{{
+			Type:   "custom",
+			Name:   "apply_patch",
+			Format: map[string]any{"type": "grammar", "syntax": "lark", "definition": applyPatchGrammarForTest()},
+		}},
+	}
+	input := map[string]any{"operations": []map[string]any{{
+		"type":    "add_file",
+		"path":    "docs/api.md",
+		"content": "# API\ncontent\n",
+	}}}
+	events := []anthropic.StreamEvent{
+		{Type: "message_start", Message: &anthropic.MessageResponse{ID: "msg_1", Type: "message", Role: "assistant"}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &anthropic.ContentBlock{
+			Type: "tool_use",
+			ID:   "tool_patch",
+			Name: "apply_patch",
+		}},
+		{Type: "content_block_delta", Index: 0, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: string(mustMarshalRaw(t, input))}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
+		{Type: "message_stop"},
+	}
+
+	bridgeUnderTest := testBridge()
+	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request))
+	completed := streamLifecycleResponse(t, converted, "response.completed")
+	want := "*** Begin Patch\n*** Add File: docs/api.md\n+# API\n+content\n*** End Patch"
+	if completed.Output[0].Input != want {
+		t.Fatalf("patch = %q, want %q", completed.Output[0].Input, want)
+	}
+}
+
 func TestConvertStreamEventsConvertsWebSearchServerToolUse(t *testing.T) {
 	events := []anthropic.StreamEvent{
 		{Type: "message_start", Message: &anthropic.MessageResponse{ID: "msg_1", Type: "message", Role: "assistant"}},
@@ -148,6 +275,52 @@ func TestConvertStreamEventsKeepsWebSearchInputDeltaAsAction(t *testing.T) {
 	}
 	if item.Action == nil || item.Action.Query != "Kimi K2.6" {
 		t.Fatalf("web search action = %+v", item.Action)
+	}
+}
+
+func TestConvertStreamEventsSkipsEmptyWebSearchServerToolUse(t *testing.T) {
+	events := []anthropic.StreamEvent{
+		{Type: "message_start", Message: &anthropic.MessageResponse{ID: "msg_1", Type: "message", Role: "assistant"}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &anthropic.ContentBlock{Type: "text"}},
+		{Type: "content_block_delta", Index: 0, Delta: anthropic.StreamDelta{Type: "text_delta", Text: "Search results for query: "}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "content_block_start", Index: 1, ContentBlock: &anthropic.ContentBlock{
+			Type: "server_tool_use",
+			Name: "web_search",
+		}},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "content_block_start", Index: 2, ContentBlock: &anthropic.ContentBlock{
+			Type:    "web_search_tool_result",
+			Content: []any{},
+		}},
+		{Type: "content_block_stop", Index: 2},
+		{Type: "content_block_start", Index: 3, ContentBlock: &anthropic.ContentBlock{
+			Type:  "tool_use",
+			ID:    "tool_1",
+			Name:  "list_mcp_resources",
+			Input: json.RawMessage(`{"server":"deepwiki"}`),
+		}},
+		{Type: "content_block_delta", Index: 3, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: `{"server":"deepwiki"}`}},
+		{Type: "content_block_stop", Index: 3},
+		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
+		{Type: "message_stop"},
+	}
+
+	converted := testBridge().ConvertStreamEvents(events, "gpt-test")
+	for _, event := range converted {
+		if event.Event == "response.output_item.done" {
+			item := event.Data.(openai.OutputItemEvent).Item
+			if item.Type == "web_search_call" {
+				t.Fatalf("unexpected web_search_call item = %+v", item)
+			}
+		}
+	}
+	completed := streamLifecycleResponse(t, converted, "response.completed")
+	if len(completed.Output) != 1 {
+		t.Fatalf("completed output = %+v", completed.Output)
+	}
+	if completed.Output[0].Type != "function_call" || completed.Output[0].Name != "list_mcp_resources" {
+		t.Fatalf("completed output = %+v", completed.Output)
 	}
 }
 

@@ -90,7 +90,7 @@ type Usage struct {
 }
 
 type InputTokensDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	CachedTokens int `json:"cached_tokens"`
 }
 
 type IncompleteDetails struct {
@@ -167,4 +167,13 @@ type FunctionCallArgumentsDoneEvent struct {
 	ItemID         string `json:"item_id,omitempty"`
 	OutputIndex    int    `json:"output_index"`
 	Arguments      string `json:"arguments"`
+}
+
+type CustomToolCallInputDeltaEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number"`
+	ItemID         string `json:"item_id,omitempty"`
+	CallID         string `json:"call_id,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	Delta          string `json:"delta"`
 }

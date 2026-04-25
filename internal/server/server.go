@@ -90,6 +90,7 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 	}
 
 	anthropicRequest, plan, err := server.bridge.ToAnthropic(responsesRequest)
+	conversionContext := server.bridge.ConversionContext(responsesRequest)
 	record.AnthropicRequest = anthropicRequest
 	if err != nil {
 		status, payload := server.bridge.ErrorResponse(err)
@@ -115,7 +116,7 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 		return
 	}
 
-	openAIResponse := server.bridge.FromAnthropicWithPlan(anthropicResponse, responsesRequest.Model, plan)
+	openAIResponse := server.bridge.FromAnthropicWithPlanAndContext(anthropicResponse, responsesRequest.Model, plan, conversionContext)
 	record.AnthropicResponse = anthropicResponse
 	record.OpenAIResponse = openAIResponse
 	server.writeTrace(record)
@@ -152,7 +153,7 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 		events = append(events, event)
 	}
 
-	openAIEvents := server.bridge.ConvertStreamEvents(events, responsesRequest.Model)
+	openAIEvents := server.bridge.ConvertStreamEventsWithContext(events, responsesRequest.Model, server.bridge.ConversionContext(responsesRequest))
 	record.AnthropicStreamEvents = events
 	record.OpenAIStreamEvents = openAIEvents
 	server.writeTrace(record)
