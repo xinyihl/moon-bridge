@@ -72,4 +72,51 @@ func TestConvertStreamEventsConvertsToolArguments(t *testing.T) {
 	if done.Arguments != `{"id":"42"}` {
 		t.Fatalf("arguments = %q", done.Arguments)
 	}
+
+	completed := streamLifecycleResponse(t, converted, "response.completed")
+	if len(completed.Output) != 1 {
+		t.Fatalf("completed output = %+v", completed.Output)
+	}
+	item := completed.Output[0]
+	if item.Type != "function_call" || item.Status != "completed" || item.Name != "lookup" || item.CallID != "toolu_1" || item.Arguments != `{"id":"42"}` {
+		t.Fatalf("completed function item = %+v", item)
+	}
+}
+
+func TestConvertStreamEventsMarksTextOutputCompletedInFinalResponse(t *testing.T) {
+	events := []anthropic.StreamEvent{
+		{Type: "message_start", Message: &anthropic.MessageResponse{ID: "msg_1", Type: "message", Role: "assistant"}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &anthropic.ContentBlock{Type: "text"}},
+		{Type: "content_block_delta", Index: 0, Delta: anthropic.StreamDelta{Type: "text_delta", Text: "Hi"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "end_turn"}},
+		{Type: "message_stop"},
+	}
+
+	converted := testBridge().ConvertStreamEvents(events, "gpt-test")
+	completed := streamLifecycleResponse(t, converted, "response.completed")
+	if len(completed.Output) != 1 {
+		t.Fatalf("completed output = %+v", completed.Output)
+	}
+	item := completed.Output[0]
+	if item.Type != "message" || item.Status != "completed" || len(item.Content) != 1 || item.Content[0].Text != "Hi" {
+		t.Fatalf("completed message item = %+v", item)
+	}
+}
+
+func streamLifecycleResponse(t *testing.T, events []openai.StreamEvent, eventName string) openai.Response {
+	t.Helper()
+
+	for _, event := range events {
+		if event.Event != eventName {
+			continue
+		}
+		lifecycle, ok := event.Data.(openai.ResponseLifecycleEvent)
+		if !ok {
+			t.Fatalf("%s data = %T", eventName, event.Data)
+		}
+		return lifecycle.Response
+	}
+	t.Fatalf("%s not found in %+v", eventName, events)
+	return openai.Response{}
 }

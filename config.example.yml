@@ -1,13 +1,21 @@
+mode: "Transform" # Transform / CaptureAnthropic / CaptureResponse
+
 server:
-  addr: "127.0.0.1:8080"
+  addr: "127.0.0.1:38440"
+
+trace_requests: false
 
 provider:
   base_url: "https://provider.example.com"
   api_key: "replace-with-provider-api-key"
   version: "2023-06-01"
   default_max_tokens: 1024
+  default_model: "moonbridge"
   models:
-    moonbridge: "provider-model-name"
+    moonbridge:
+      name: "provider-model-name"
+      context_window: 200000
+      max_output_tokens: 100000
 
 cache:
   mode: "automatic" # off / automatic / explicit / hybrid
@@ -20,3 +28,16 @@ cache:
   min_cache_tokens: 1024
   expected_reuse: 2
   minimum_value_score: 2048
+
+developer:
+  proxy:
+    response:
+      provider:
+        base_url: "https://api.openai.com"
+        api_key: "replace-with-real-openai-compatible-api-key"
+    anthropic:
+      model: "provider-model-name"
+      provider:
+        base_url: "https://provider.example.com"
+        api_key: "replace-with-real-anthropic-compatible-api-key"
+        version: "2023-06-01"

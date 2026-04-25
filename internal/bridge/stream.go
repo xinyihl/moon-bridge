@@ -164,6 +164,14 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 	index := event.Index
 	if text, ok := converter.contentText[index]; ok {
 		converter.response.OutputText += text
+		item := openai.OutputItem{
+			Type:    "message",
+			ID:      converter.itemIDs[index],
+			Status:  "completed",
+			Role:    "assistant",
+			Content: []openai.ContentPart{{Type: "output_text", Text: text}},
+		}
+		converter.setOutput(index, item)
 		return []openai.StreamEvent{
 			{
 				Event: "response.output_text.done",
@@ -177,7 +185,7 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 				},
 			},
 			converter.contentPart("response.content_part.done", index, 0, openai.ContentPart{Type: "output_text", Text: text}),
-			converter.outputItem("response.output_item.done", index, openai.OutputItem{Type: "message", ID: converter.itemIDs[index], Status: "completed", Role: "assistant", Content: []openai.ContentPart{{Type: "output_text", Text: text}}}),
+			converter.outputItem("response.output_item.done", index, item),
 		}
 	}
 	if arguments, ok := converter.toolArguments[index]; ok {
@@ -194,6 +202,13 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 				converter.outputItem("response.output_item.done", index, item),
 			}
 		}
+		item := converter.outputAt(index)
+		item.Type = "function_call"
+		item.ID = converter.itemIDs[index]
+		item.CallID = strings.TrimPrefix(converter.itemIDs[index], "fc_")
+		item.Arguments = compactJSON(arguments)
+		item.Status = "completed"
+		converter.setOutput(index, item)
 		return []openai.StreamEvent{
 			{
 				Event: "response.function_call_arguments.done",
@@ -205,10 +220,17 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 					Arguments:      compactJSON(arguments),
 				},
 			},
-			converter.outputItem("response.output_item.done", index, openai.OutputItem{Type: "function_call", ID: converter.itemIDs[index], Arguments: compactJSON(arguments), Status: "completed"}),
+			converter.outputItem("response.output_item.done", index, item),
 		}
 	}
 	return nil
+}
+
+func (converter *streamConverter) outputAt(index int) openai.OutputItem {
+	if index < len(converter.response.Output) {
+		return converter.response.Output[index]
+	}
+	return openai.OutputItem{}
 }
 
 func (converter *streamConverter) setOutput(index int, item openai.OutputItem) {

@@ -10,7 +10,9 @@ import (
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
+	"moonbridge/internal/proxy"
 	"moonbridge/internal/server"
+	mbtrace "moonbridge/internal/trace"
 )
 
 const Name = "Moon Bridge"
@@ -32,20 +34,84 @@ func RunServerFromEnv(ctx context.Context, errors io.Writer) error {
 }
 
 func RunServer(ctx context.Context, cfg config.Config, errors io.Writer) error {
+	switch cfg.Mode {
+	case config.ModeTransform:
+		return runTransform(ctx, cfg, errors)
+	case config.ModeCaptureResponse:
+		return runCaptureResponse(ctx, cfg, errors)
+	case config.ModeCaptureAnthropic:
+		return runCaptureAnthropic(ctx, cfg, errors)
+	default:
+		return fmt.Errorf("unsupported mode %q", cfg.Mode)
+	}
+}
+
+func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) error {
 	anthropicClient := anthropic.NewClient(anthropic.ClientConfig{
 		BaseURL: cfg.ProviderBaseURL,
 		APIKey:  cfg.ProviderAPIKey,
 		Version: cfg.ProviderVersion,
 	})
+	tracer := mbtrace.New(mbtrace.Config{Enabled: cfg.TraceRequests})
+	logTrace(errors, "transform", tracer)
 	handler := server.New(server.Config{
-		Bridge:   bridge.New(cfg, cache.NewMemoryRegistry()),
-		Provider: anthropicClientWrapper{client: anthropicClient},
+		Bridge:      bridge.New(cfg, cache.NewMemoryRegistry()),
+		Provider:    anthropicClientWrapper{client: anthropicClient},
+		Tracer:      tracer,
+		TraceErrors: errors,
 	})
 
-	httpServer := &http.Server{Addr: cfg.Addr, Handler: handler}
+	return runHTTPServer(ctx, cfg.Addr, handler, errors)
+}
+
+func runCaptureResponse(ctx context.Context, cfg config.Config, errors io.Writer) error {
+	tracer := mbtrace.New(mbtrace.Config{
+		Enabled: cfg.TraceRequests,
+	})
+	logTrace(errors, "response proxy", tracer)
+	handler, err := proxy.NewResponse(proxy.ResponseConfig{
+		UpstreamBaseURL: cfg.ResponseProxy.ProviderBaseURL,
+		APIKey:          cfg.ResponseProxy.ProviderAPIKey,
+		Tracer:          tracer,
+		TraceErrors:     errors,
+	})
+	if err != nil {
+		return err
+	}
+	return runHTTPServer(ctx, cfg.Addr, handler, errors)
+}
+
+func runCaptureAnthropic(ctx context.Context, cfg config.Config, errors io.Writer) error {
+	tracer := mbtrace.New(mbtrace.Config{
+		Enabled: cfg.TraceRequests,
+	})
+	logTrace(errors, "anthropic proxy", tracer)
+	handler, err := proxy.NewAnthropic(proxy.AnthropicConfig{
+		UpstreamBaseURL: cfg.AnthropicProxy.ProviderBaseURL,
+		APIKey:          cfg.AnthropicProxy.ProviderAPIKey,
+		Version:         cfg.AnthropicProxy.ProviderVersion,
+		Tracer:          tracer,
+		TraceErrors:     errors,
+	})
+	if err != nil {
+		return err
+	}
+	return runHTTPServer(ctx, cfg.Addr, handler, errors)
+}
+
+func logTrace(errors io.Writer, label string, tracer *mbtrace.Tracer) {
+	if !tracer.Enabled() {
+		fmt.Fprintf(errors, "%s trace disabled\n", label)
+		return
+	}
+	fmt.Fprintf(errors, "%s trace enabled at %s\n", label, tracer.Directory())
+}
+
+func runHTTPServer(ctx context.Context, addr string, handler http.Handler, errors io.Writer) error {
+	httpServer := &http.Server{Addr: addr, Handler: handler}
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(errors, "%s listening on %s\n", Name, cfg.Addr)
+		fmt.Fprintf(errors, "%s listening on %s\n", Name, addr)
 		errCh <- httpServer.ListenAndServe()
 	}()
 

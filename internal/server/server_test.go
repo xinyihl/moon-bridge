@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"moonbridge/internal/anthropic"
@@ -14,6 +17,7 @@ import (
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
 	"moonbridge/internal/server"
+	mbtrace "moonbridge/internal/trace"
 )
 
 type fakeProvider struct {
@@ -84,6 +88,54 @@ func TestResponsesHandlerReturnsOpenAIResponse(t *testing.T) {
 	}
 	if response["object"] != "response" || response["output_text"] != "Hello from provider" {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestResponsesHandlerWritesTraceFile(t *testing.T) {
+	traceRoot := t.TempDir()
+	provider := &fakeProvider{}
+	handler := server.New(server.Config{
+		Bridge: bridge.New(config.Config{
+			DefaultMaxTokens: 1024,
+			ModelMap:         map[string]string{"gpt-test": "claude-test"},
+			Cache:            config.CacheConfig{Mode: "off"},
+		}, cache.NewMemoryRegistry()),
+		Provider: provider,
+		Tracer:   mbtrace.New(mbtrace.Config{Enabled: true, Root: traceRoot, SessionID: "session-test"}),
+	})
+
+	requestBody := bytes.NewBufferString(`{"model":"gpt-test","input":"Hello trace debug"}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", requestBody)
+	request.Header.Set("Authorization", "Bearer client-api-key")
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	data, err := os.ReadFile(filepath.Join(traceRoot, "session-test", "1.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(trace) error = %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "client-api-key") {
+		t.Fatalf("trace leaked API key: %s", content)
+	}
+	for _, want := range []string{
+		`"request_number": 1`,
+		`"openai_request"`,
+		"Hello trace debug",
+		`"anthropic_request"`,
+		"claude-test",
+		`"anthropic_response"`,
+		"Hello from provider",
+		`"openai_response"`,
+		"[REDACTED]",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("trace missing %q: %s", want, content)
+		}
 	}
 }
 

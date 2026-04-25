@@ -1,0 +1,114 @@
+package proxy
+
+import (
+	"bytes"
+	"io"
+	"net/http"
+
+	mbtrace "moonbridge/internal/trace"
+)
+
+type AnthropicConfig struct {
+	UpstreamBaseURL string
+	APIKey          string
+	Version         string
+	Client          *http.Client
+	Tracer          *mbtrace.Tracer
+	TraceErrors     io.Writer
+}
+
+type AnthropicServer struct {
+	upstreamBaseURL string
+	apiKey          string
+	version         string
+	client          *http.Client
+	tracer          *mbtrace.Tracer
+	traceErrors     io.Writer
+}
+
+func NewAnthropic(cfg AnthropicConfig) (*AnthropicServer, error) {
+	upstreamBaseURL, err := normalizeUpstreamBaseURL(cfg.UpstreamBaseURL, "https://api.anthropic.com/v1")
+	if err != nil {
+		return nil, err
+	}
+	client := cfg.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &AnthropicServer{
+		upstreamBaseURL: upstreamBaseURL,
+		apiKey:          cfg.APIKey,
+		version:         cfg.Version,
+		client:          client,
+		tracer:          cfg.Tracer,
+		traceErrors:     cfg.TraceErrors,
+	}, nil
+}
+
+func (server *AnthropicServer) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	server.serveProxy(writer, request)
+}
+
+func (server *AnthropicServer) serveProxy(writer http.ResponseWriter, request *http.Request) {
+	requestBody, err := io.ReadAll(request.Body)
+	if err != nil {
+		http.Error(writer, "failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	targetURL := upstreamURL(server.upstreamBaseURL, request)
+	upstreamRequest, err := newUpstreamRequest(request, targetURL, requestBody, server.overrideAuth)
+	if err != nil {
+		http.Error(writer, "failed to create upstream request", http.StatusBadGateway)
+		return
+	}
+
+	record := mbtrace.Record{
+		HTTPRequest: mbtrace.NewHTTPRequest(request),
+		ProxyRequest: ProxyRequest{
+			Method:  request.Method,
+			URL:     request.URL.RequestURI(),
+			Headers: request.Header.Clone(),
+			Body:    mbtrace.RawJSONOrString(requestBody),
+		},
+		UpstreamRequest: ProxyRequest{
+			Method:  upstreamRequest.Method,
+			URL:     targetURL,
+			Headers: upstreamRequest.Header.Clone(),
+			Body:    mbtrace.RawJSONOrString(requestBody),
+		},
+	}
+
+	upstreamResponse, err := server.client.Do(upstreamRequest)
+	if err != nil {
+		record.Error = map[string]string{"stage": "upstream_request", "message": err.Error()}
+		writeTrace(server.tracer, server.traceErrors, record)
+		http.Error(writer, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer upstreamResponse.Body.Close()
+
+	copyHeaders(writer.Header(), upstreamResponse.Header)
+	writer.WriteHeader(upstreamResponse.StatusCode)
+
+	var responseBody bytes.Buffer
+	copyErr := copyStreaming(writer, upstreamResponse.Body, &responseBody)
+	record.UpstreamResponse = ProxyResponse{
+		StatusCode: upstreamResponse.StatusCode,
+		Headers:    upstreamResponse.Header.Clone(),
+		Body:       mbtrace.RawJSONOrString(responseBody.Bytes()),
+	}
+	if copyErr != nil {
+		record.Error = map[string]string{"stage": "copy_upstream_response", "message": copyErr.Error()}
+	}
+	writeTrace(server.tracer, server.traceErrors, record)
+}
+
+func (server *AnthropicServer) overrideAuth(headers http.Header) {
+	if server.apiKey != "" {
+		headers.Set("X-Api-Key", server.apiKey)
+	}
+	if server.version != "" {
+		headers.Set("Anthropic-Version", server.version)
+	}
+}

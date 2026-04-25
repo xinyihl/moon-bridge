@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -9,16 +10,45 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultConfigPath = "config.yml"
+const (
+	DefaultConfigPath = "config.yml"
+	DefaultAddr       = "127.0.0.1:38440"
+)
+
+type Mode string
+
+const (
+	ModeCaptureAnthropic Mode = "CaptureAnthropic"
+	ModeCaptureResponse  Mode = "CaptureResponse"
+	ModeTransform        Mode = "Transform"
+)
 
 type Config struct {
+	Mode             Mode
 	Addr             string
+	TraceRequests    bool
+	DefaultModel     string
 	ProviderBaseURL  string
 	ProviderAPIKey   string
 	ProviderVersion  string
 	DefaultMaxTokens int
 	ModelMap         map[string]string
+	ProviderModels   map[string]ProviderModelConfig
 	Cache            CacheConfig
+	ResponseProxy    ResponseProxyConfig
+	AnthropicProxy   AnthropicProxyConfig
+}
+
+type ResponseProxyConfig struct {
+	ProviderBaseURL string
+	ProviderAPIKey  string
+}
+
+type AnthropicProxyConfig struct {
+	Model           string
+	ProviderBaseURL string
+	ProviderAPIKey  string
+	ProviderVersion string
 }
 
 type CacheConfig struct {
@@ -34,10 +64,19 @@ type CacheConfig struct {
 	MinimumValueScore        int
 }
 
+type ProviderModelConfig struct {
+	Name            string
+	ContextWindow   int
+	MaxOutputTokens int
+}
+
 type FileConfig struct {
-	Server   ServerFileConfig   `yaml:"server"`
-	Provider ProviderFileConfig `yaml:"provider"`
-	Cache    CacheFileConfig    `yaml:"cache"`
+	Mode          string              `yaml:"mode"`
+	TraceRequests bool                `yaml:"trace_requests"`
+	Server        ServerFileConfig    `yaml:"server"`
+	Provider      ProviderFileConfig  `yaml:"provider"`
+	Cache         CacheFileConfig     `yaml:"cache"`
+	Developer     DeveloperFileConfig `yaml:"developer"`
 }
 
 type ServerFileConfig struct {
@@ -45,11 +84,12 @@ type ServerFileConfig struct {
 }
 
 type ProviderFileConfig struct {
-	BaseURL          string            `yaml:"base_url"`
-	APIKey           string            `yaml:"api_key"`
-	Version          string            `yaml:"version"`
-	DefaultMaxTokens int               `yaml:"default_max_tokens"`
-	Models           map[string]string `yaml:"models"`
+	BaseURL          string                             `yaml:"base_url"`
+	APIKey           string                             `yaml:"api_key"`
+	Version          string                             `yaml:"version"`
+	DefaultMaxTokens int                                `yaml:"default_max_tokens"`
+	DefaultModel     string                             `yaml:"default_model"`
+	Models           map[string]ProviderModelFileConfig `yaml:"models"`
 }
 
 type CacheFileConfig struct {
@@ -63,6 +103,32 @@ type CacheFileConfig struct {
 	MinCacheTokens           int    `yaml:"min_cache_tokens"`
 	ExpectedReuse            int    `yaml:"expected_reuse"`
 	MinimumValueScore        int    `yaml:"minimum_value_score"`
+}
+
+type ProviderModelFileConfig struct {
+	Name            string `yaml:"name"`
+	ContextWindow   int    `yaml:"context_window"`
+	MaxOutputTokens int    `yaml:"max_output_tokens"`
+}
+
+type DeveloperFileConfig struct {
+	Proxy DeveloperProxyFileConfig `yaml:"proxy"`
+}
+
+type DeveloperProxyFileConfig struct {
+	Response  ProxyFileConfig `yaml:"response"`
+	Anthropic ProxyFileConfig `yaml:"anthropic"`
+}
+
+type ProxyFileConfig struct {
+	Model    string                  `yaml:"model"`
+	Provider ProxyProviderFileConfig `yaml:"provider"`
+}
+
+type ProxyProviderFileConfig struct {
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	Version string `yaml:"version"`
 }
 
 func LoadFromEnv() (Config, error) {
@@ -83,53 +149,152 @@ func LoadFromFile(path string) (Config, error) {
 
 func LoadFromYAML(data []byte) (Config, error) {
 	var fileConfig FileConfig
-	if err := yaml.Unmarshal(data, &fileConfig); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&fileConfig); err != nil {
 		return Config{}, err
 	}
 	return FromFileConfig(fileConfig)
 }
 
 func FromFileConfig(fileConfig FileConfig) (Config, error) {
+	mode, err := parseMode(fileConfig.Mode)
+	if err != nil {
+		return Config{}, err
+	}
+	providerModels := FromProviderModelFileConfig(fileConfig.Provider.Models)
 	cfg := Config{
-		Addr:             valueOrDefault(strings.TrimSpace(fileConfig.Server.Addr), ":8080"),
+		Mode:             mode,
+		Addr:             valueOrDefault(strings.TrimSpace(fileConfig.Server.Addr), DefaultAddr),
+		TraceRequests:    fileConfig.TraceRequests,
+		DefaultModel:     strings.TrimSpace(fileConfig.Provider.DefaultModel),
 		ProviderBaseURL:  strings.TrimRight(strings.TrimSpace(fileConfig.Provider.BaseURL), "/"),
 		ProviderAPIKey:   strings.TrimSpace(fileConfig.Provider.APIKey),
 		ProviderVersion:  valueOrDefault(strings.TrimSpace(fileConfig.Provider.Version), "2023-06-01"),
 		DefaultMaxTokens: intOrDefault(fileConfig.Provider.DefaultMaxTokens, 1024),
-		ModelMap:         normalizeModelMap(fileConfig.Provider.Models),
-		Cache: CacheConfig{
-			Mode:                     valueOrDefault(strings.TrimSpace(fileConfig.Cache.Mode), "automatic"),
-			TTL:                      valueOrDefault(strings.TrimSpace(fileConfig.Cache.TTL), "5m"),
-			PromptCaching:            boolOrDefault(fileConfig.Cache.PromptCaching, true),
-			AutomaticPromptCache:     boolOrDefault(fileConfig.Cache.AutomaticPromptCache, true),
-			ExplicitCacheBreakpoints: boolOrDefault(fileConfig.Cache.ExplicitCacheBreakpoints, true),
-			AllowRetentionDowngrade:  boolOrDefault(fileConfig.Cache.AllowRetentionDowngrade, false),
-			MaxBreakpoints:           intOrDefault(fileConfig.Cache.MaxBreakpoints, 4),
-			MinCacheTokens:           intOrDefault(fileConfig.Cache.MinCacheTokens, 1024),
-			ExpectedReuse:            intOrDefault(fileConfig.Cache.ExpectedReuse, 2),
-			MinimumValueScore:        intOrDefault(fileConfig.Cache.MinimumValueScore, 2048),
-		},
+		ModelMap:         providerModelMap(providerModels),
+		ProviderModels:   providerModels,
+		Cache:            fromCacheFileConfig(fileConfig.Cache),
+		ResponseProxy:    FromResponseProxyFileConfig(fileConfig.Developer.Proxy.Response),
+		AnthropicProxy:   FromAnthropicProxyFileConfig(fileConfig.Developer.Proxy.Anthropic),
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func parseMode(value string) (Mode, error) {
+	switch mode := Mode(strings.TrimSpace(value)); mode {
+	case ModeCaptureAnthropic, ModeCaptureResponse, ModeTransform:
+		return mode, nil
+	case "":
+		return "", errors.New("mode is required")
+	default:
+		return "", fmt.Errorf("invalid mode %q", value)
+	}
+}
+
+func (cfg Config) Validate() error {
+	if err := cfg.Cache.Validate(); err != nil {
+		return err
+	}
+	switch cfg.Mode {
+	case ModeTransform:
+		return cfg.validateTransform()
+	case ModeCaptureResponse:
+		return cfg.ResponseProxy.Validate("developer.proxy.response")
+	case ModeCaptureAnthropic:
+		return cfg.AnthropicProxy.Validate("developer.proxy.anthropic")
+	default:
+		return fmt.Errorf("invalid mode %q", cfg.Mode)
+	}
+}
+
+func (cfg Config) validateTransform() error {
 	if cfg.ProviderBaseURL == "" {
-		return Config{}, errors.New("provider.base_url is required")
+		return errors.New("provider.base_url is required")
 	}
 	if cfg.ProviderAPIKey == "" {
-		return Config{}, errors.New("provider.api_key is required")
+		return errors.New("provider.api_key is required")
 	}
 	if len(cfg.ModelMap) == 0 {
-		return Config{}, errors.New("provider.models must contain at least one model mapping")
+		return errors.New("provider.models must contain at least one model mapping")
 	}
 	for alias, model := range cfg.ModelMap {
 		if alias == "" || model == "" {
-			return Config{}, errors.New("provider.models cannot contain empty aliases or models")
+			return errors.New("provider.models cannot contain empty aliases or models")
 		}
 	}
-	if err := cfg.Cache.Validate(); err != nil {
-		return Config{}, err
-	}
+	return nil
+}
 
-	return cfg, nil
+func FromResponseProxyFileConfig(fileConfig ProxyFileConfig) ResponseProxyConfig {
+	return ResponseProxyConfig{
+		ProviderBaseURL: strings.TrimRight(strings.TrimSpace(fileConfig.Provider.BaseURL), "/"),
+		ProviderAPIKey:  strings.TrimSpace(fileConfig.Provider.APIKey),
+	}
+}
+
+func FromAnthropicProxyFileConfig(fileConfig ProxyFileConfig) AnthropicProxyConfig {
+	return AnthropicProxyConfig{
+		Model:           strings.TrimSpace(fileConfig.Model),
+		ProviderBaseURL: strings.TrimRight(strings.TrimSpace(fileConfig.Provider.BaseURL), "/"),
+		ProviderAPIKey:  strings.TrimSpace(fileConfig.Provider.APIKey),
+		ProviderVersion: valueOrDefault(strings.TrimSpace(fileConfig.Provider.Version), "2023-06-01"),
+	}
+}
+
+func FromProviderModelFileConfig(fileConfig map[string]ProviderModelFileConfig) map[string]ProviderModelConfig {
+	models := make(map[string]ProviderModelConfig, len(fileConfig))
+	for alias, model := range fileConfig {
+		trimmedAlias := strings.TrimSpace(alias)
+		if trimmedAlias == "" {
+			continue
+		}
+		models[trimmedAlias] = ProviderModelConfig{
+			Name:            strings.TrimSpace(model.Name),
+			ContextWindow:   model.ContextWindow,
+			MaxOutputTokens: model.MaxOutputTokens,
+		}
+	}
+	return models
+}
+
+func fromCacheFileConfig(fileConfig CacheFileConfig) CacheConfig {
+	return CacheConfig{
+		Mode:                     valueOrDefault(strings.TrimSpace(fileConfig.Mode), "automatic"),
+		TTL:                      valueOrDefault(strings.TrimSpace(fileConfig.TTL), "5m"),
+		PromptCaching:            boolOrDefault(fileConfig.PromptCaching, true),
+		AutomaticPromptCache:     boolOrDefault(fileConfig.AutomaticPromptCache, true),
+		ExplicitCacheBreakpoints: boolOrDefault(fileConfig.ExplicitCacheBreakpoints, true),
+		AllowRetentionDowngrade:  boolOrDefault(fileConfig.AllowRetentionDowngrade, false),
+		MaxBreakpoints:           intOrDefault(fileConfig.MaxBreakpoints, 4),
+		MinCacheTokens:           intOrDefault(fileConfig.MinCacheTokens, 1024),
+		ExpectedReuse:            intOrDefault(fileConfig.ExpectedReuse, 2),
+		MinimumValueScore:        intOrDefault(fileConfig.MinimumValueScore, 2048),
+	}
+}
+
+func (cfg ResponseProxyConfig) Validate(prefix string) error {
+	if cfg.ProviderBaseURL == "" {
+		return fmt.Errorf("%s.provider.base_url is required", prefix)
+	}
+	if cfg.ProviderAPIKey == "" {
+		return fmt.Errorf("%s.provider.api_key is required", prefix)
+	}
+	return nil
+}
+
+func (cfg AnthropicProxyConfig) Validate(prefix string) error {
+	if cfg.ProviderBaseURL == "" {
+		return fmt.Errorf("%s.provider.base_url is required", prefix)
+	}
+	if cfg.ProviderAPIKey == "" {
+		return fmt.Errorf("%s.provider.api_key is required", prefix)
+	}
+	return nil
 }
 
 func (cfg Config) ModelFor(model string) string {
@@ -140,6 +305,35 @@ func (cfg Config) ModelFor(model string) string {
 		return mapped
 	}
 	return model
+}
+
+func (cfg Config) ProviderModelFor(model string) ProviderModelConfig {
+	if cfg.ProviderModels == nil {
+		return ProviderModelConfig{}
+	}
+	return cfg.ProviderModels[model]
+}
+
+func (cfg Config) DefaultModelAlias() string {
+	if cfg.DefaultModel != "" {
+		return cfg.DefaultModel
+	}
+	if _, ok := cfg.ProviderModels["moonbridge"]; ok {
+		return "moonbridge"
+	}
+	if len(cfg.ProviderModels) == 1 {
+		for alias := range cfg.ProviderModels {
+			return alias
+		}
+	}
+	return ""
+}
+
+func (cfg *Config) OverrideAddr(addr string) {
+	if addr == "" {
+		return
+	}
+	cfg.Addr = strings.TrimSpace(addr)
 }
 
 func (cfg CacheConfig) Validate() error {
@@ -177,13 +371,13 @@ func boolOrDefault(value *bool, fallback bool) bool {
 	return *value
 }
 
-func normalizeModelMap(models map[string]string) map[string]string {
+func providerModelMap(models map[string]ProviderModelConfig) map[string]string {
 	if len(models) == 0 {
-		return models
+		return nil
 	}
 	normalized := make(map[string]string, len(models))
 	for alias, model := range models {
-		normalized[strings.TrimSpace(alias)] = strings.TrimSpace(model)
+		normalized[strings.TrimSpace(alias)] = strings.TrimSpace(model.Name)
 	}
 	return normalized
 }

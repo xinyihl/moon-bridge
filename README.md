@@ -11,7 +11,16 @@ cp config.example.yml config.yml
 ```
 
 `config.yml` 包含 Provider API Key，已被 `.gitignore` 忽略，不要提交。
-`provider.models` 里建议保留 `moonbridge` 这个模型别名，Codex 验证脚本和 E2E 会优先使用它。
+`provider.models` 是 Transform 模式的模型映射表，也是 Codex 启动脚本生成临时模型上下文配置的来源。建议保留 `provider.default_model` 指向的模型别名，Codex 脚本和 E2E 会优先使用它。
+所有模式都使用 `server.addr` 监听，默认端口为 `38440`。
+
+需要排查转发细节时，可以打开 trace：
+
+```yaml
+trace_requests: true
+```
+
+启用后，当前 `mode` 的请求会写入 `trace/{session_id}/{request_number}.json`。除 API Key 会脱敏外，其余内容保留，方便 debug。`trace/` 已被 `.gitignore` 忽略。
 
 ## 运行
 
@@ -22,13 +31,13 @@ go run ./cmd/moonbridge
 指定配置文件或临时覆盖监听地址：
 
 ```bash
-go run ./cmd/moonbridge --config ./config.yml --addr 127.0.0.1:8080
+go run ./cmd/moonbridge --config ./config.yml --addr 127.0.0.1:38440
 ```
 
 ## 调用
 
 ```bash
-curl -sS http://localhost:8080/v1/responses \
+curl -sS http://localhost:38440/v1/responses \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-test","input":"Hello"}'
 ```
@@ -45,7 +54,7 @@ model_provider = "moonbridge"
 
 [model_providers.moonbridge]
 name = "Moon Bridge"
-base_url = "http://localhost:8080/v1"
+base_url = "http://localhost:38440/v1"
 wire_api = "responses"
 env_key = "MOONBRIDGE_CLIENT_API_KEY"
 
@@ -87,39 +96,45 @@ CGO_ENABLED=0 GOCACHE="$(pwd)/.cache/go-build" go test -tags=e2e ./internal/e2e
 MOONBRIDGE_E2E_CACHE=1 CGO_ENABLED=0 GOCACHE="$(pwd)/.cache/go-build" go test -tags=e2e ./internal/e2e
 ```
 
-## Codex 端到端验证
+## 启动 Codex
 
-脚本会读取 `config.yml`，自动启动 Moon Bridge，并用临时 `CODEX_HOME=./verify-codex-home` 运行 Codex，不修改全局 `~/.codex` 配置。`./verify-codex-home` 已被 `.gitignore` 忽略。
+当 `config.yml` 的 `mode` 为 `Transform` 时，使用统一脚本启动 Moon Bridge 和 Codex。脚本会读取 `server.addr`、`provider.default_model`、`provider.models.<alias>.context_window` / `max_output_tokens`，生成临时 `./FakeHome/Codex/config.toml`，并用临时 `CODEX_HOME=./FakeHome/Codex` 运行 Codex，不修改全局 `~/.codex` 配置。Codex 退出时脚本会清理 Moon Bridge 进程。
 
-启动交互式 Codex TUI，在里面实际让 Codex 跑测试：
+启动交互式 Codex TUI：
 
 ```bash
-./scripts/verify-codex-tui.sh
+./scripts/start_codex_with_moonbridge.sh
 ```
 
 也可以带一个初始任务进入 TUI：
 
 ```bash
-./scripts/verify-codex-tui.sh '请运行 CGO_ENABLED=0 GOCACHE="$(pwd)/.cache/go-build" go test ./... 并汇报结果'
+./scripts/start_codex_with_moonbridge.sh '请运行 CGO_ENABLED=0 GOCACHE="$(pwd)/.cache/go-build" go test ./... 并汇报结果'
 ```
 
-非交互 smoke test：
+## 启动 Claude Code
+
+当 `config.yml` 的 `mode` 为 `CaptureAnthropic` 时，使用统一脚本启动 Anthropic Messages 透明代理和 Claude Code。脚本会读取同一个 `server.addr`、`developer.proxy.anthropic.model` 和上游 Provider 配置，设置临时 `CLAUDE_CONFIG_DIR=./FakeHome/ClaudeCode`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY`，不修改全局 Claude 配置。
+
+```yaml
+developer:
+  proxy:
+    anthropic:
+      model: "provider-model-name"
+      provider:
+        base_url: "https://provider.example.com"
+        api_key: "real-upstream-provider-api-key"
+        version: "2023-06-01"
+```
 
 ```bash
-./scripts/verify-codex.sh
+./scripts/start_claude_code_with_moonbridge.sh
 ```
 
-自定义提示词：
+也可以带一个初始任务进入 Claude Code：
 
 ```bash
-./scripts/verify-codex.sh "Reply exactly: moonbridge codex ok"
+./scripts/start_claude_code_with_moonbridge.sh '请读取 README 并总结项目用途'
 ```
 
-可选环境变量：
-
-```bash
-MOONBRIDGE_VERIFY_PORT=18081 ./scripts/verify-codex.sh
-MOONBRIDGE_VERIFY_MODEL_ALIAS=moonbridge ./scripts/verify-codex.sh
-MOONBRIDGE_CONFIG="$(pwd)/config.yml" ./scripts/verify-codex.sh
-CODEX_HOME="$(pwd)/verify-codex-home" ./scripts/verify-codex.sh
-```
+Moon Bridge 默认使用 `server.addr: 127.0.0.1:38440`；`mode` 决定运行 Transform、CaptureAnthropic 还是 CaptureResponse，不再为透明代理分配单独端口。日志会分别写入 `logs/moonbridge-codex.log` 或 `logs/moonbridge-claude-code.log`。`FakeHome/`、`logs/` 和 `trace/` 均已被 `.gitignore` 忽略。

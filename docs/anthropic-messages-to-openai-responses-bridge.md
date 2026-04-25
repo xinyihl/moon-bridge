@@ -423,7 +423,7 @@ provider:
 - 不把 Provider API Key 暴露给客户端；客户端 key 与上游 key 分开配置。
 - 日志默认脱敏 `Authorization`、tool arguments 中的密钥形态字段、图片/文件 base64。
 - 请求和响应都记录 trace id，但不记录完整 prompt，除非开启安全审计模式。
-- `.gitignore` 已忽略 `helloagents/`、`.codex`、`.claude`、`AGENTS.md`、`CLAUDE.md`、`config.yml`、`config.yaml` 等本地路径和敏感配置，发布包只包含产品代码和示例配置。
+- `.gitignore` 已忽略 `helloagents/`、`.codex`、`.claude`、`AGENTS.md`、`CLAUDE.md`、`config.yml`、`config.yaml`、`trace/` 等本地路径、敏感配置和调试转储，发布包只包含产品代码和示例配置。
 
 ## 最小实现顺序
 
@@ -446,7 +446,7 @@ provider:
 
 ## Codex CLI 兼容说明
 
-- Codex CLI 可通过 `wire_api = "responses"` 和 `base_url = "http://localhost:8080/v1"` 接入 Moon Bridge。
+- Codex CLI 可通过 `wire_api = "responses"` 和 `base_url = "http://localhost:38440/v1"` 接入 Moon Bridge。
 - 转发层接受 Codex 常见请求字段：`parallel_tool_calls`、`reasoning`、`include`、`text`、`store`、`client_metadata`、`prompt_cache_key`。
 - Codex `local_shell` tool 会转成 Anthropic tool，Provider 返回 `tool_use` 后再映射回 OpenAI `local_shell_call`。
 - Codex 下一轮的 `local_shell_call_output` 会转成 Anthropic `tool_result`。
