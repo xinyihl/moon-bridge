@@ -15,6 +15,7 @@ import (
 	"moonbridge/internal/logger"
 	"moonbridge/internal/proxy"
 	"moonbridge/internal/server"
+	"moonbridge/internal/stats"
 	mbtrace "moonbridge/internal/trace"
 )
 
@@ -60,6 +61,7 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 		UserAgent: cfg.ProviderUserAgent,
 	})
 	cfg = resolveWebSearchSupport(ctx, cfg, anthropicClient, errors)
+	sessionStats := stats.NewSessionStats()
 	tracer := mbtrace.New(mbtrace.Config{
 		Enabled: cfg.TraceRequests,
 		Root:    transformTraceRoot(),
@@ -70,9 +72,10 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 		Provider:    anthropicClientWrapper{client: anthropicClient},
 		Tracer:      tracer,
 		TraceErrors: errors,
+		Stats:       sessionStats,
 	})
 
-	return runHTTPServer(ctx, cfg.Addr, handler, errors)
+	return runHTTPServer(ctx, cfg.Addr, handler, errors, sessionStats)
 }
 
 type webSearchProber interface {
@@ -129,7 +132,7 @@ func runCaptureResponse(ctx context.Context, cfg config.Config, errors io.Writer
 		return err
 	}
 	logger.Info("response proxy initialized", "upstream", cfg.ResponseProxy.ProviderBaseURL)
-	return runHTTPServer(ctx, cfg.Addr, handler, errors)
+	return runHTTPServer(ctx, cfg.Addr, handler, errors, nil)
 }
 
 func runCaptureAnthropic(ctx context.Context, cfg config.Config, errors io.Writer) error {
@@ -146,7 +149,7 @@ func runCaptureAnthropic(ctx context.Context, cfg config.Config, errors io.Write
 		return err
 	}
 	logger.Info("anthropic proxy initialized", "upstream", cfg.AnthropicProxy.ProviderBaseURL)
-	return runHTTPServer(ctx, cfg.Addr, handler, errors)
+	return runHTTPServer(ctx, cfg.Addr, handler, errors, nil)
 }
 
 func logTrace(errors io.Writer, label string, tracer *mbtrace.Tracer) {
@@ -176,7 +179,7 @@ func captureAnthropicTraceConfig(enabled bool) mbtrace.Config {
 	}
 }
 
-func runHTTPServer(ctx context.Context, addr string, handler http.Handler, errors io.Writer) error {
+func runHTTPServer(ctx context.Context, addr string, handler http.Handler, errors io.Writer, sessionStats *stats.SessionStats) error {
 	httpServer := &http.Server{Addr: addr, Handler: handler}
 	errCh := make(chan error, 1)
 	go func() {
@@ -187,6 +190,12 @@ func runHTTPServer(ctx context.Context, addr string, handler http.Handler, error
 
 	select {
 	case <-ctx.Done():
+		if sessionStats != nil {
+			summary := sessionStats.Summary()
+			logger.Info("session summary", "stats", summary)
+			fmt.Fprintln(errors)
+			stats.WriteSummary(errors, summary)
+		}
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		return httpServer.Shutdown(shutdownCtx)

@@ -9,6 +9,7 @@ import (
 
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/bridge"
+	"moonbridge/internal/stats"
 	"moonbridge/internal/openai"
 	"moonbridge/internal/logger"
 	mbtrace "moonbridge/internal/trace"
@@ -24,6 +25,7 @@ type Config struct {
 	Provider    Provider
 	Tracer      *mbtrace.Tracer
 	TraceErrors io.Writer
+	Stats       *stats.SessionStats
 }
 
 type Server struct {
@@ -31,6 +33,7 @@ type Server struct {
 	provider    Provider
 	tracer      *mbtrace.Tracer
 	traceErrors io.Writer
+	stats       *stats.SessionStats
 	mux         *http.ServeMux
 }
 
@@ -40,6 +43,7 @@ func New(cfg Config) *Server {
 		provider:    cfg.Provider,
 		tracer:      cfg.Tracer,
 		traceErrors: cfg.TraceErrors,
+		stats:       cfg.Stats,
 		mux:         http.NewServeMux(),
 	}
 	server.mux.HandleFunc("/v1/responses", server.handleResponses)
@@ -127,7 +131,23 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 	}
 
 	openAIResponse := server.bridge.FromAnthropicWithPlanAndContext(anthropicResponse, responsesRequest.Model, plan, conversionContext)
-	logger.Info("request completed", "model", responsesRequest.Model, "status", "ok", "input_tokens", anthropicResponse.Usage.InputTokens, "output_tokens", anthropicResponse.Usage.OutputTokens)
+	usage := anthropicResponse.Usage
+	if server.stats != nil {
+		server.stats.Record(responsesRequest.Model, stats.Usage{
+			InputTokens:              usage.InputTokens,
+			OutputTokens:             usage.OutputTokens,
+			CacheCreationInputTokens: usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     usage.CacheReadInputTokens,
+		})
+	}
+	logger.Info("request completed",
+		"model", responsesRequest.Model,
+		"input_tokens", usage.InputTokens,
+		"output_tokens", usage.OutputTokens,
+		"cache_creation", usage.CacheCreationInputTokens,
+		"cache_read", usage.CacheReadInputTokens,
+		"session_cache_hit_rate", server.stats.CacheHitRate(),
+	)
 	record.AnthropicResponse = anthropicResponse
 	record.OpenAIResponse = openAIResponse
 	server.writeTrace(record)
@@ -176,7 +196,30 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 	for _, event := range openAIEvents {
 		writeSSE(writer, event)
 	}
-	logger.Info("stream completed", "model", responsesRequest.Model, "events", len(openAIEvents))
+	// Extract usage from message_delta event
+	var usage anthropic.Usage
+	for _, event := range events {
+		if event.Type == "message_delta" && event.Usage != nil {
+			usage = *event.Usage
+		}
+	}
+	if server.stats != nil {
+		server.stats.Record(responsesRequest.Model, stats.Usage{
+			InputTokens:              usage.InputTokens,
+			OutputTokens:             usage.OutputTokens,
+			CacheCreationInputTokens: usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     usage.CacheReadInputTokens,
+		})
+	}
+	logger.Info("stream completed",
+		"model", responsesRequest.Model,
+		"events", len(openAIEvents),
+		"input_tokens", usage.InputTokens,
+		"output_tokens", usage.OutputTokens,
+		"cache_creation", usage.CacheCreationInputTokens,
+		"cache_read", usage.CacheReadInputTokens,
+		"session_cache_hit_rate", server.stats.CacheHitRate(),
+	)
 }
 
 func (server *Server) writeTrace(record mbtrace.Record) {
