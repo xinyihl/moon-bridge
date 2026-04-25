@@ -58,11 +58,30 @@ func TestInjectReasoningIntoOutput(t *testing.T) {
 	}
 }
 
-func TestToAnthropicRequestClearsTemperature(t *testing.T) {
+func TestToAnthropicRequestClearsTemperatureAndMapsEffort(t *testing.T) {
 	f := 0.5
-	req := anthropic.MessageRequest{Temperature: &f, TopP: &f}
-	ToAnthropicRequest(&req)
+	req := anthropic.MessageRequest{Temperature: &f, TopP: &f, MaxTokens: 1000}
+	ToAnthropicRequest(&req, map[string]any{"effort": "low"})
 	if req.Temperature != nil || req.TopP != nil {
 		t.Fatal("expected temperature and top_p to be cleared")
+	}
+	if req.Thinking == nil || req.Thinking.Type != "enabled" || req.Thinking.BudgetTokens != 500 {
+		t.Fatalf("unexpected thinking config: %+v", req.Thinking)
+	}
+}
+
+func TestToAnthropicRequestMapsHighToMax(t *testing.T) {
+	req := anthropic.MessageRequest{MaxTokens: 1000}
+	ToAnthropicRequest(&req, map[string]any{"effort": "high"})
+	if req.Thinking == nil || req.Thinking.BudgetTokens != 750 {
+		t.Fatalf("unexpected thinking config: %+v", req.Thinking)
+	}
+}
+
+func TestToAnthropicRequestNoReasoning(t *testing.T) {
+	req := anthropic.MessageRequest{MaxTokens: 1000}
+	ToAnthropicRequest(&req, nil)
+	if req.Thinking != nil {
+		t.Fatalf("expected no thinking config, got %+v", req.Thinking)
 	}
 }

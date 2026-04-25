@@ -179,7 +179,7 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest) (anthropic.Me
 	}
 
 	if bridge.cfg.DeepSeekV4Enabled() {
-		deepseekv4.ToAnthropicRequest(&converted)
+		deepseekv4.ToAnthropicRequest(&converted, request.Reasoning)
 	}
 
 	plan, err := bridge.planCache(request, converted)

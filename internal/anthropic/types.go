@@ -21,6 +21,7 @@ type MessageRequest struct {
 	Stream        bool            `json:"stream,omitempty"`
 	CacheControl  *CacheControl   `json:"cache_control,omitempty"`
 	Raw           json.RawMessage `json:"-"`
+	Thinking      *ThinkingConfig `json:"thinking,omitempty"`
 }
 
 type Message struct {
@@ -101,4 +102,8 @@ type StreamDelta struct {
 type ErrorObject struct {
 	Type    string `json:"type,omitempty"`
 	Message string `json:"message,omitempty"`
+}
+type ThinkingConfig struct {
+	Type         string `json:"type,omitempty"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }

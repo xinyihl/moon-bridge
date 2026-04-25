@@ -122,7 +122,57 @@ func IsReasoningContentBlock(block *anthropic.ContentBlock) bool {
 // ToAnthropicRequest mutates an Anthropic request for DeepSeek V4 quirks:
 //   - Drop unsupported parameters (temperature, top_p) because DeepSeek
 //     ignores them and they can confuse some proxies.
-func ToAnthropicRequest(req *anthropic.MessageRequest) {
+//   - Map reasoning_effort to DeepSeek thinking level: below "high" => "high",
+//     "high" and above => "max".
+func ToAnthropicRequest(req *anthropic.MessageRequest, reasoning map[string]any) {
 	req.Temperature = nil
 	req.TopP = nil
+
+	level := extractReasoningEffort(reasoning)
+	if level == "" {
+		return
+	}
+	var thinkingLevel string
+	switch level {
+	case "low", "medium":
+		thinkingLevel = "high"
+	case "high", "maximum", "max":
+		thinkingLevel = "max"
+	default:
+		// Unknown values: treat as high if lexicographically less than "high",
+		// otherwise max.
+		if level < "high" {
+			thinkingLevel = "high"
+		} else {
+			thinkingLevel = "max"
+		}
+	}
+	req.Thinking = &anthropic.ThinkingConfig{
+		Type:         "enabled",
+		BudgetTokens: budgetForLevel(thinkingLevel, req.MaxTokens),
+	}
+}
+func extractReasoningEffort(reasoning map[string]any) string {
+	if reasoning == nil {
+		return ""
+	}
+	v, ok := reasoning["effort"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func budgetForLevel(level string, maxTokens int) int {
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
+	switch level {
+	case "high":
+		return maxTokens / 2
+	case "max":
+		return maxTokens * 3 / 4
+	default:
+		return maxTokens / 2
+	}
 }
