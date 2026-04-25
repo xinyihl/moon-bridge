@@ -47,6 +47,15 @@ func testBridgeWithWebSearchDisabled() *bridge.Bridge {
 	return testBridgeWithConfig(cfg)
 }
 
+func mustMarshalRaw(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	return data
+}
 func TestToAnthropicConvertsTextToolsToolChoiceAndCache(t *testing.T) {
 	request := openai.ResponsesRequest{
 		Model:           "gpt-test",
