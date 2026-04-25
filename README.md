@@ -32,6 +32,38 @@ curl -sS http://localhost:8080/v1/responses \
   -d '{"model":"gpt-test","input":"Hello"}'
 ```
 
+## 接入 Codex CLI
+
+Moon Bridge 兼容 Codex CLI 使用的 OpenAI Responses 请求形态，包括 `/responses` 路径、`local_shell` 工具、函数工具、工具结果回传和常见 Codex 元数据字段。
+
+示例 `~/.codex/config.toml`：
+
+```toml
+model = "moonbridge"
+model_provider = "moonbridge"
+
+[model_providers.moonbridge]
+name = "Moon Bridge"
+base_url = "http://localhost:8080/v1"
+wire_api = "responses"
+env_key = "MOONBRIDGE_CLIENT_API_KEY"
+
+[model_providers.moonbridge.models.moonbridge]
+name = "Moon Bridge"
+```
+
+本地转发层当前不校验客户端 API key，可随便给一个占位值：
+
+```bash
+export MOONBRIDGE_CLIENT_API_KEY="local-dev"
+```
+
+再启动 Moon Bridge：
+
+```bash
+go run ./cmd/moonbridge
+```
+
 ## 测试
 
 ```bash

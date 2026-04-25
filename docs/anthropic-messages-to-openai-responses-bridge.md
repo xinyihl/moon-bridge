@@ -439,10 +439,18 @@ provider:
 
 ## 首版实现状态
 
-- 已实现：配置加载、OpenAI/Anthropic DTO、Anthropic Provider client、非流式 `/v1/responses`、基础 SSE 输出、function tool 映射、tool result 映射、prompt cache planner、`cache_control` 注入、usage 归一化、OpenAI 风格错误。
+- 已实现：配置加载、OpenAI/Anthropic DTO、Anthropic Provider client、非流式 `/v1/responses` 和 `/responses`、基础 SSE 输出、function tool 映射、Codex `local_shell` 工具映射、tool result 映射、prompt cache planner、`cache_control` 注入、usage 归一化、OpenAI 风格错误。
 - 已测试：配置默认值与校验、DTO JSON、Provider client header/response/SSE 解析、缓存 planner、请求转换、响应转换、流式事件转换、HTTP handler。
 - 暂未实现：OpenAI 内置工具、文件 ID 解析、response retrieve/cancel、持久化 registry、真实 token 计数、后台预热 worker。
 - 当前缓存 registry 为内存实现，重启后不会保留命中状态；Anthropic 侧真实缓存仍由 Provider 管理。
+
+## Codex CLI 兼容说明
+
+- Codex CLI 可通过 `wire_api = "responses"` 和 `base_url = "http://localhost:8080/v1"` 接入 Moon Bridge。
+- 转发层接受 Codex 常见请求字段：`parallel_tool_calls`、`reasoning`、`include`、`text`、`store`、`client_metadata`、`prompt_cache_key`。
+- Codex `local_shell` tool 会转成 Anthropic tool，Provider 返回 `tool_use` 后再映射回 OpenAI `local_shell_call`。
+- Codex 下一轮的 `local_shell_call_output` 会转成 Anthropic `tool_result`。
+- Moon Bridge 只负责模型协议转发，不在服务端执行 shell；shell 执行仍由 Codex 客户端完成。
 
 ## 官方资料
 

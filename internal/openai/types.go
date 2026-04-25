@@ -12,7 +12,15 @@ type ResponsesRequest struct {
 	Stop                 json.RawMessage `json:"stop,omitempty"`
 	Tools                []Tool          `json:"tools,omitempty"`
 	ToolChoice           json.RawMessage `json:"tool_choice,omitempty"`
+	ParallelToolCalls    *bool           `json:"parallel_tool_calls,omitempty"`
 	Stream               bool            `json:"stream,omitempty"`
+	Store                *bool           `json:"store,omitempty"`
+	PreviousResponseID   string          `json:"previous_response_id,omitempty"`
+	Include              []string        `json:"include,omitempty"`
+	Reasoning            map[string]any  `json:"reasoning,omitempty"`
+	Text                 map[string]any  `json:"text,omitempty"`
+	ServiceTier          string          `json:"service_tier,omitempty"`
+	ClientMetadata       map[string]any  `json:"client_metadata,omitempty"`
 	Metadata             map[string]any  `json:"metadata,omitempty"`
 	User                 string          `json:"user,omitempty"`
 	PromptCacheKey       string          `json:"prompt_cache_key,omitempty"`
@@ -24,6 +32,7 @@ type Tool struct {
 	Name        string         `json:"name,omitempty"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	Format      map[string]any `json:"format,omitempty"`
 }
 
 type Response struct {
@@ -49,6 +58,16 @@ type OutputItem struct {
 	CallID    string        `json:"call_id,omitempty"`
 	Name      string        `json:"name,omitempty"`
 	Arguments string        `json:"arguments,omitempty"`
+	Input     string        `json:"input,omitempty"`
+	Action    *ToolAction   `json:"action,omitempty"`
+}
+
+type ToolAction struct {
+	Type             string            `json:"type,omitempty"`
+	Command          []string          `json:"command,omitempty"`
+	WorkingDirectory string            `json:"working_directory,omitempty"`
+	TimeoutMS        int               `json:"timeout_ms,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
 }
 
 type ContentPart struct {

@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/openai"
@@ -100,6 +101,18 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 			converter.contentPart("response.content_part.added", index, 0, openai.ContentPart{Type: "output_text"}),
 		}
 	case "tool_use":
+		if block.Name == "local_shell" {
+			item := openai.OutputItem{
+				Type:   "local_shell_call",
+				ID:     "lc_" + block.ID,
+				CallID: block.ID,
+				Status: "in_progress",
+				Action: localShellActionFromRaw(block.Input),
+			}
+			converter.itemIDs[index] = item.ID
+			converter.response.Output = append(converter.response.Output, item)
+			return []openai.StreamEvent{converter.outputItem("response.output_item.added", index, item)}
+		}
 		item := openai.OutputItem{
 			Type:      "function_call",
 			ID:        "fc_" + block.ID,
@@ -165,6 +178,16 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 		}
 	}
 	if arguments, ok := converter.toolArguments[index]; ok {
+		if strings.HasPrefix(converter.itemIDs[index], "lc_") {
+			return []openai.StreamEvent{
+				converter.outputItem("response.output_item.done", index, openai.OutputItem{
+					Type:   "local_shell_call",
+					ID:     converter.itemIDs[index],
+					Action: localShellActionFromRaw(json.RawMessage(compactJSON(arguments))),
+					Status: "completed",
+				}),
+			}
+		}
 		return []openai.StreamEvent{
 			{
 				Event: "response.function_call_arguments.done",

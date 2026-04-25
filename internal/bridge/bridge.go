@@ -127,6 +127,16 @@ func (bridge *Bridge) FromAnthropicWithPlan(response anthropic.MessageResponse, 
 				})
 				messageContent = nil
 			}
+			if block.Name == "local_shell" {
+				output = append(output, openai.OutputItem{
+					Type:   "local_shell_call",
+					ID:     "lc_" + block.ID,
+					CallID: block.ID,
+					Status: "completed",
+					Action: localShellActionFromRaw(block.Input),
+				})
+				continue
+			}
 			output = append(output, openai.OutputItem{
 				Type:      "function_call",
 				ID:        "fc_" + block.ID,
@@ -220,12 +230,39 @@ func (bridge *Bridge) convertInput(raw json.RawMessage) ([]anthropic.Message, []
 	system := make([]anthropic.ContentBlock, 0)
 	for _, item := range items {
 		switch {
-		case item.Type == "function_call_output":
+		case item.Type == "function_call" || item.Type == "custom_tool_call":
+			toolInput := json.RawMessage(item.Arguments)
+			if len(toolInput) == 0 {
+				toolInput = json.RawMessage(item.Input)
+			}
+			if len(toolInput) == 0 {
+				toolInput = json.RawMessage(`{}`)
+			}
+			messages = append(messages, anthropic.Message{
+				Role: "assistant",
+				Content: []anthropic.ContentBlock{{
+					Type:  "tool_use",
+					ID:    firstNonEmpty(item.CallID, item.ID),
+					Name:  item.Name,
+					Input: toolInput,
+				}},
+			})
+		case item.Type == "local_shell_call":
+			messages = append(messages, anthropic.Message{
+				Role: "assistant",
+				Content: []anthropic.ContentBlock{{
+					Type:  "tool_use",
+					ID:    firstNonEmpty(item.CallID, item.ID),
+					Name:  "local_shell",
+					Input: localShellInputFromAction(item.Action),
+				}},
+			})
+		case strings.HasSuffix(item.Type, "_output") || item.Type == "function_call_output":
 			messages = append(messages, anthropic.Message{
 				Role: "user",
 				Content: []anthropic.ContentBlock{{
 					Type:      "tool_result",
-					ToolUseID: item.CallID,
+					ToolUseID: firstNonEmpty(item.CallID, item.ID),
 					Content:   item.Output,
 				}},
 			})
@@ -247,7 +284,33 @@ func (bridge *Bridge) convertInput(raw json.RawMessage) ([]anthropic.Message, []
 func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error) {
 	converted := make([]anthropic.Tool, 0, len(tools))
 	for index, tool := range tools {
-		if tool.Type != "function" {
+		switch tool.Type {
+		case "function":
+			if tool.Parameters == nil {
+				tool.Parameters = map[string]any{"type": "object"}
+			}
+			converted = append(converted, anthropic.Tool{
+				Name:        tool.Name,
+				Description: tool.Description,
+				InputSchema: tool.Parameters,
+			})
+		case "local_shell":
+			converted = append(converted, anthropic.Tool{
+				Name:        "local_shell",
+				Description: "Run a local shell command. Use only when you need command output from the user's workspace.",
+				InputSchema: localShellSchema(),
+			})
+		case "custom":
+			converted = append(converted, anthropic.Tool{
+				Name:        tool.Name,
+				Description: tool.Description,
+				InputSchema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"input": map[string]any{"type": "string"}},
+					"required":   []string{"input"},
+				},
+			})
+		default:
 			return nil, &RequestError{
 				Status:  http.StatusBadRequest,
 				Message: "Unsupported tool type: " + tool.Type,
@@ -255,14 +318,6 @@ func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error
 				Code:    "unsupported_parameter",
 			}
 		}
-		if tool.Parameters == nil {
-			tool.Parameters = map[string]any{"type": "object"}
-		}
-		converted = append(converted, anthropic.Tool{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: tool.Parameters,
-		})
 	}
 	return converted, nil
 }
@@ -382,11 +437,16 @@ func (bridge *Bridge) injectCacheControl(request *anthropic.MessageRequest, plan
 }
 
 type inputItem struct {
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
-	CallID  string          `json:"call_id"`
-	Output  string          `json:"output"`
+	Type      string             `json:"type"`
+	ID        string             `json:"id"`
+	Role      string             `json:"role"`
+	Content   json.RawMessage    `json:"content"`
+	CallID    string             `json:"call_id"`
+	Name      string             `json:"name"`
+	Arguments string             `json:"arguments"`
+	Input     string             `json:"input"`
+	Action    *openai.ToolAction `json:"action"`
+	Output    string             `json:"output"`
 }
 
 func contentBlocksFromRaw(raw json.RawMessage) []anthropic.ContentBlock {
@@ -478,4 +538,67 @@ func responseID(providerID string) string {
 
 func invalidRequest(message, param, code string) error {
 	return &RequestError{Status: http.StatusBadRequest, Message: message, Param: param, Code: code}
+}
+
+func localShellSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"command": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+			"working_directory": map[string]any{"type": "string"},
+			"timeout_ms":        map[string]any{"type": "integer"},
+			"env": map[string]any{
+				"type":                 "object",
+				"additionalProperties": map[string]any{"type": "string"},
+			},
+		},
+		"required": []string{"command"},
+	}
+}
+
+func localShellActionFromRaw(raw json.RawMessage) *openai.ToolAction {
+	var input struct {
+		Command          []string          `json:"command"`
+		WorkingDirectory string            `json:"working_directory"`
+		TimeoutMS        int               `json:"timeout_ms"`
+		Env              map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return &openai.ToolAction{Type: "exec"}
+	}
+	return &openai.ToolAction{
+		Type:             "exec",
+		Command:          input.Command,
+		WorkingDirectory: input.WorkingDirectory,
+		TimeoutMS:        input.TimeoutMS,
+		Env:              input.Env,
+	}
+}
+
+func localShellInputFromAction(action *openai.ToolAction) json.RawMessage {
+	if action == nil {
+		return json.RawMessage(`{"command":[]}`)
+	}
+	data, err := json.Marshal(map[string]any{
+		"command":           action.Command,
+		"working_directory": action.WorkingDirectory,
+		"timeout_ms":        action.TimeoutMS,
+		"env":               action.Env,
+	})
+	if err != nil {
+		return json.RawMessage(`{"command":[]}`)
+	}
+	return data
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

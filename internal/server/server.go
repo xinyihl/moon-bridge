@@ -30,6 +30,7 @@ type Server struct {
 func New(cfg Config) *Server {
 	server := &Server{bridge: cfg.Bridge, provider: cfg.Provider, mux: http.NewServeMux()}
 	server.mux.HandleFunc("/v1/responses", server.handleResponses)
+	server.mux.HandleFunc("/responses", server.handleResponses)
 	return server
 }
 

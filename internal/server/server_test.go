@@ -87,6 +87,28 @@ func TestResponsesHandlerReturnsOpenAIResponse(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerAcceptsCodexResponsesPath(t *testing.T) {
+	provider := &fakeProvider{}
+	handler := server.New(server.Config{
+		Bridge: bridge.New(config.Config{
+			DefaultMaxTokens: 1024,
+			ModelMap:         map[string]string{"gpt-test": "claude-test"},
+			Cache:            config.CacheConfig{Mode: "off"},
+		}, cache.NewMemoryRegistry()),
+		Provider: provider,
+	})
+
+	requestBody := bytes.NewBufferString(`{"model":"gpt-test","input":"Hello"}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/responses", requestBody)
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestResponsesHandlerRejectsUnsupportedToolType(t *testing.T) {
 	handler := server.New(server.Config{
 		Bridge: bridge.New(config.Config{
