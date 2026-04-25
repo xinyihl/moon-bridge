@@ -138,6 +138,7 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 			Data: openai.OutputTextDeltaEvent{
 				Type:           "response.output_text.delta",
 				SequenceNumber: converter.next(),
+				ItemID:         converter.itemIDs[index],
 				OutputIndex:    index,
 				ContentIndex:   0,
 				Delta:          event.Delta.Text,
@@ -150,6 +151,7 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 			Data: openai.FunctionCallArgumentsDeltaEvent{
 				Type:           "response.function_call_arguments.delta",
 				SequenceNumber: converter.next(),
+				ItemID:         converter.itemIDs[index],
 				OutputIndex:    index,
 				Delta:          event.Delta.PartialJSON,
 			},
@@ -168,6 +170,7 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 				Data: openai.OutputTextDoneEvent{
 					Type:           "response.output_text.done",
 					SequenceNumber: converter.next(),
+					ItemID:         converter.itemIDs[index],
 					OutputIndex:    index,
 					ContentIndex:   0,
 					Text:           text,
@@ -179,13 +182,16 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 	}
 	if arguments, ok := converter.toolArguments[index]; ok {
 		if strings.HasPrefix(converter.itemIDs[index], "lc_") {
+			item := openai.OutputItem{
+				Type:   "local_shell_call",
+				ID:     converter.itemIDs[index],
+				CallID: strings.TrimPrefix(converter.itemIDs[index], "lc_"),
+				Action: localShellActionFromRaw(json.RawMessage(compactJSON(arguments))),
+				Status: "completed",
+			}
+			converter.setOutput(index, item)
 			return []openai.StreamEvent{
-				converter.outputItem("response.output_item.done", index, openai.OutputItem{
-					Type:   "local_shell_call",
-					ID:     converter.itemIDs[index],
-					Action: localShellActionFromRaw(json.RawMessage(compactJSON(arguments))),
-					Status: "completed",
-				}),
+				converter.outputItem("response.output_item.done", index, item),
 			}
 		}
 		return []openai.StreamEvent{
@@ -194,6 +200,7 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 				Data: openai.FunctionCallArgumentsDoneEvent{
 					Type:           "response.function_call_arguments.done",
 					SequenceNumber: converter.next(),
+					ItemID:         converter.itemIDs[index],
 					OutputIndex:    index,
 					Arguments:      compactJSON(arguments),
 				},
@@ -202,6 +209,13 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 		}
 	}
 	return nil
+}
+
+func (converter *streamConverter) setOutput(index int, item openai.OutputItem) {
+	for len(converter.response.Output) <= index {
+		converter.response.Output = append(converter.response.Output, openai.OutputItem{})
+	}
+	converter.response.Output[index] = item
 }
 
 func (converter *streamConverter) lifecycle(event string) openai.StreamEvent {
@@ -234,6 +248,7 @@ func (converter *streamConverter) contentPart(event string, outputIndex int, con
 		Data: openai.ContentPartEvent{
 			Type:           event,
 			SequenceNumber: converter.next(),
+			ItemID:         converter.itemIDs[outputIndex],
 			OutputIndex:    outputIndex,
 			ContentIndex:   contentIndex,
 			Part:           part,

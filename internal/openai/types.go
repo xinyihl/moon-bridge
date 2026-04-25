@@ -72,7 +72,7 @@ type ToolAction struct {
 
 type ContentPart struct {
 	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Text string `json:"text"`
 }
 
 type Usage struct {
@@ -122,6 +122,7 @@ type OutputItemEvent struct {
 type ContentPartEvent struct {
 	Type           string      `json:"type"`
 	SequenceNumber int64       `json:"sequence_number"`
+	ItemID         string      `json:"item_id,omitempty"`
 	OutputIndex    int         `json:"output_index"`
 	ContentIndex   int         `json:"content_index"`
 	Part           ContentPart `json:"part"`
@@ -130,6 +131,7 @@ type ContentPartEvent struct {
 type OutputTextDeltaEvent struct {
 	Type           string `json:"type"`
 	SequenceNumber int64  `json:"sequence_number"`
+	ItemID         string `json:"item_id,omitempty"`
 	OutputIndex    int    `json:"output_index"`
 	ContentIndex   int    `json:"content_index"`
 	Delta          string `json:"delta"`
@@ -138,6 +140,7 @@ type OutputTextDeltaEvent struct {
 type OutputTextDoneEvent struct {
 	Type           string `json:"type"`
 	SequenceNumber int64  `json:"sequence_number"`
+	ItemID         string `json:"item_id,omitempty"`
 	OutputIndex    int    `json:"output_index"`
 	ContentIndex   int    `json:"content_index"`
 	Text           string `json:"text"`
@@ -146,6 +149,7 @@ type OutputTextDoneEvent struct {
 type FunctionCallArgumentsDeltaEvent struct {
 	Type           string `json:"type"`
 	SequenceNumber int64  `json:"sequence_number"`
+	ItemID         string `json:"item_id,omitempty"`
 	OutputIndex    int    `json:"output_index"`
 	Delta          string `json:"delta"`
 }
@@ -153,6 +157,7 @@ type FunctionCallArgumentsDeltaEvent struct {
 type FunctionCallArgumentsDoneEvent struct {
 	Type           string `json:"type"`
 	SequenceNumber int64  `json:"sequence_number"`
+	ItemID         string `json:"item_id,omitempty"`
 	OutputIndex    int    `json:"output_index"`
 	Arguments      string `json:"arguments"`
 }

@@ -310,6 +310,8 @@ func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error
 					"required":   []string{"input"},
 				},
 			})
+		case "web_search", "web_search_preview", "file_search", "computer_use_preview", "image_generation":
+			continue
 		default:
 			return nil, &RequestError{
 				Status:  http.StatusBadRequest,

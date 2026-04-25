@@ -118,7 +118,7 @@ func TestResponsesHandlerRejectsUnsupportedToolType(t *testing.T) {
 		Provider: &fakeProvider{},
 	})
 
-	requestBody := bytes.NewBufferString(`{"model":"gpt-test","input":"Hello","tools":[{"type":"web_search_preview"}]}`)
+	requestBody := bytes.NewBufferString(`{"model":"gpt-test","input":"Hello","tools":[{"type":"unknown_tool"}]}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/responses", requestBody)
 

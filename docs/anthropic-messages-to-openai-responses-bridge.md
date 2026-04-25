@@ -450,6 +450,7 @@ provider:
 - 转发层接受 Codex 常见请求字段：`parallel_tool_calls`、`reasoning`、`include`、`text`、`store`、`client_metadata`、`prompt_cache_key`。
 - Codex `local_shell` tool 会转成 Anthropic tool，Provider 返回 `tool_use` 后再映射回 OpenAI `local_shell_call`。
 - Codex 下一轮的 `local_shell_call_output` 会转成 Anthropic `tool_result`。
+- Codex 默认附带的 OpenAI 原生内置工具（例如 `web_search`）会被转发层忽略，不会传给 Anthropic Provider；需要搜索能力时应后续单独实现 Anthropic 侧可用工具。
 - Moon Bridge 只负责模型协议转发，不在服务端执行 shell；shell 执行仍由 Codex 客户端完成。
 
 ## 官方资料

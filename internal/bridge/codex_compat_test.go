@@ -41,6 +41,28 @@ func TestToAnthropicAcceptsCodexLocalShellTool(t *testing.T) {
 	}
 }
 
+func TestToAnthropicIgnoresCodexNativeBuiltInTools(t *testing.T) {
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`"hello"`),
+		Tools: []openai.Tool{
+			{Type: "local_shell"},
+			{Type: "web_search"},
+		},
+	}
+
+	converted, _, err := testBridge().ToAnthropic(request)
+	if err != nil {
+		t.Fatalf("ToAnthropic() error = %v", err)
+	}
+	if len(converted.Tools) != 1 {
+		t.Fatalf("tools = %+v", converted.Tools)
+	}
+	if converted.Tools[0].Name != "local_shell" {
+		t.Fatalf("tool = %+v", converted.Tools[0])
+	}
+}
+
 func TestFromAnthropicMapsLocalShellToolUseForCodex(t *testing.T) {
 	response := anthropic.MessageResponse{
 		ID:         "msg_123",
