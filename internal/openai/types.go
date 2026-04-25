@@ -28,12 +28,14 @@ type ResponsesRequest struct {
 }
 
 type Tool struct {
-	Type        string         `json:"type"`
-	Name        string         `json:"name,omitempty"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"`
-	Format      map[string]any `json:"format,omitempty"`
-	Tools       []Tool         `json:"tools,omitempty"`
+	Type               string         `json:"type"`
+	Name               string         `json:"name,omitempty"`
+	Description        string         `json:"description,omitempty"`
+	Parameters         map[string]any `json:"parameters,omitempty"`
+	Format             map[string]any `json:"format,omitempty"`
+	Tools              []Tool         `json:"tools,omitempty"`
+	ExternalWebAccess  *bool          `json:"external_web_access,omitempty"`
+	SearchContentTypes []string       `json:"search_content_types,omitempty"`
 }
 
 type Response struct {
@@ -69,6 +71,10 @@ type ToolAction struct {
 	WorkingDirectory string            `json:"working_directory,omitempty"`
 	TimeoutMS        int               `json:"timeout_ms,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
+	Query            string            `json:"query,omitempty"`
+	Queries          []string          `json:"queries,omitempty"`
+	URL              string            `json:"url,omitempty"`
+	Pattern          string            `json:"pattern,omitempty"`
 }
 
 type ContentPart struct {

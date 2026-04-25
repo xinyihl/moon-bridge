@@ -11,11 +11,14 @@ import (
 
 func (bridge *Bridge) ConvertStreamEvents(events []anthropic.StreamEvent, model string) []openai.StreamEvent {
 	converter := streamConverter{
-		bridge:        bridge,
-		model:         model,
-		contentText:   map[int]string{},
-		toolArguments: map[int]string{},
-		itemIDs:       map[int]string{},
+		bridge:           bridge,
+		model:            model,
+		contentText:      map[int]string{},
+		toolArguments:    map[int]string{},
+		webSearchActions: map[int]*openai.ToolAction{},
+		webSearchInputs:  map[int]string{},
+		itemIDs:          map[int]string{},
+		outputIndexes:    map[int]int{},
 	}
 	var converted []openai.StreamEvent
 	for _, event := range events {
@@ -25,13 +28,16 @@ func (bridge *Bridge) ConvertStreamEvents(events []anthropic.StreamEvent, model 
 }
 
 type streamConverter struct {
-	bridge        *Bridge
-	model         string
-	sequence      int64
-	response      openai.Response
-	contentText   map[int]string
-	toolArguments map[int]string
-	itemIDs       map[int]string
+	bridge           *Bridge
+	model            string
+	sequence         int64
+	response         openai.Response
+	contentText      map[int]string
+	toolArguments    map[int]string
+	webSearchActions map[int]*openai.ToolAction
+	webSearchInputs  map[int]string
+	itemIDs          map[int]string
+	outputIndexes    map[int]int
 }
 
 func (converter *streamConverter) convert(event anthropic.StreamEvent) []openai.StreamEvent {
@@ -95,7 +101,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 			Content: []openai.ContentPart{},
 		}
 		converter.itemIDs[index] = item.ID
-		converter.response.Output = append(converter.response.Output, item)
+		converter.addOutput(index, item)
 		return []openai.StreamEvent{
 			converter.outputItem("response.output_item.added", index, item),
 			converter.contentPart("response.content_part.added", index, 0, openai.ContentPart{Type: "output_text"}),
@@ -110,7 +116,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 				Action: localShellActionFromRaw(block.Input),
 			}
 			converter.itemIDs[index] = item.ID
-			converter.response.Output = append(converter.response.Output, item)
+			converter.addOutput(index, item)
 			return []openai.StreamEvent{converter.outputItem("response.output_item.added", index, item)}
 		}
 		item := openai.OutputItem{
@@ -122,7 +128,21 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 			Status:    "in_progress",
 		}
 		converter.itemIDs[index] = item.ID
-		converter.response.Output = append(converter.response.Output, item)
+		converter.addOutput(index, item)
+		return []openai.StreamEvent{converter.outputItem("response.output_item.added", index, item)}
+	case "server_tool_use":
+		if block.Name != "web_search" {
+			return nil
+		}
+		item := openai.OutputItem{
+			Type:   "web_search_call",
+			ID:     webSearchItemID(block.ID),
+			Status: "in_progress",
+			Action: webSearchActionFromRaw(block.Input),
+		}
+		converter.itemIDs[index] = item.ID
+		converter.webSearchActions[index] = item.Action
+		converter.addOutput(index, item)
 		return []openai.StreamEvent{converter.outputItem("response.output_item.added", index, item)}
 	}
 	return nil
@@ -139,12 +159,16 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 				Type:           "response.output_text.delta",
 				SequenceNumber: converter.next(),
 				ItemID:         converter.itemIDs[index],
-				OutputIndex:    index,
+				OutputIndex:    converter.outputIndex(index),
 				ContentIndex:   0,
 				Delta:          event.Delta.Text,
 			},
 		}}
 	case "input_json_delta":
+		if _, ok := converter.webSearchActions[index]; ok {
+			converter.webSearchInputs[index] += event.Delta.PartialJSON
+			return nil
+		}
 		converter.toolArguments[index] += event.Delta.PartialJSON
 		return []openai.StreamEvent{{
 			Event: "response.function_call_arguments.delta",
@@ -152,7 +176,7 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 				Type:           "response.function_call_arguments.delta",
 				SequenceNumber: converter.next(),
 				ItemID:         converter.itemIDs[index],
-				OutputIndex:    index,
+				OutputIndex:    converter.outputIndex(index),
 				Delta:          event.Delta.PartialJSON,
 			},
 		}}
@@ -179,7 +203,7 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 					Type:           "response.output_text.done",
 					SequenceNumber: converter.next(),
 					ItemID:         converter.itemIDs[index],
-					OutputIndex:    index,
+					OutputIndex:    converter.outputIndex(index),
 					ContentIndex:   0,
 					Text:           text,
 				},
@@ -187,6 +211,19 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 			converter.contentPart("response.content_part.done", index, 0, openai.ContentPart{Type: "output_text", Text: text}),
 			converter.outputItem("response.output_item.done", index, item),
 		}
+	}
+	if action, ok := converter.webSearchActions[index]; ok {
+		if input := converter.webSearchInputs[index]; input != "" {
+			action = webSearchActionFromRaw(json.RawMessage(compactJSON(input)))
+		}
+		item := openai.OutputItem{
+			Type:   "web_search_call",
+			ID:     converter.itemIDs[index],
+			Status: "completed",
+			Action: action,
+		}
+		converter.setOutput(index, item)
+		return []openai.StreamEvent{converter.outputItem("response.output_item.done", index, item)}
 	}
 	if arguments, ok := converter.toolArguments[index]; ok {
 		if strings.HasPrefix(converter.itemIDs[index], "lc_") {
@@ -216,7 +253,7 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 					Type:           "response.function_call_arguments.done",
 					SequenceNumber: converter.next(),
 					ItemID:         converter.itemIDs[index],
-					OutputIndex:    index,
+					OutputIndex:    converter.outputIndex(index),
 					Arguments:      compactJSON(arguments),
 				},
 			},
@@ -227,17 +264,24 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 }
 
 func (converter *streamConverter) outputAt(index int) openai.OutputItem {
-	if index < len(converter.response.Output) {
-		return converter.response.Output[index]
+	outputIndex := converter.outputIndex(index)
+	if outputIndex < len(converter.response.Output) {
+		return converter.response.Output[outputIndex]
 	}
 	return openai.OutputItem{}
 }
 
 func (converter *streamConverter) setOutput(index int, item openai.OutputItem) {
-	for len(converter.response.Output) <= index {
-		converter.response.Output = append(converter.response.Output, openai.OutputItem{})
-	}
-	converter.response.Output[index] = item
+	converter.response.Output[converter.outputIndex(index)] = item
+}
+
+func (converter *streamConverter) addOutput(index int, item openai.OutputItem) {
+	converter.outputIndexes[index] = len(converter.response.Output)
+	converter.response.Output = append(converter.response.Output, item)
+}
+
+func (converter *streamConverter) outputIndex(index int) int {
+	return converter.outputIndexes[index]
 }
 
 func (converter *streamConverter) lifecycle(event string) openai.StreamEvent {
@@ -258,7 +302,7 @@ func (converter *streamConverter) outputItem(event string, index int, item opena
 		Data: openai.OutputItemEvent{
 			Type:           event,
 			SequenceNumber: converter.next(),
-			OutputIndex:    index,
+			OutputIndex:    converter.outputIndex(index),
 			Item:           item,
 		},
 	}
@@ -271,7 +315,7 @@ func (converter *streamConverter) contentPart(event string, outputIndex int, con
 			Type:           event,
 			SequenceNumber: converter.next(),
 			ItemID:         converter.itemIDs[outputIndex],
-			OutputIndex:    outputIndex,
+			OutputIndex:    converter.outputIndex(outputIndex),
 			ContentIndex:   contentIndex,
 			Part:           part,
 		},

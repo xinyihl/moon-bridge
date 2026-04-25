@@ -41,8 +41,10 @@ type ContentBlock struct {
 
 type Tool struct {
 	Name         string         `json:"name"`
+	Type         string         `json:"type,omitempty"`
 	Description  string         `json:"description,omitempty"`
-	InputSchema  map[string]any `json:"input_schema"`
+	InputSchema  map[string]any `json:"input_schema,omitempty"`
+	MaxUses      int            `json:"max_uses,omitempty"`
 	CacheControl *CacheControl  `json:"cache_control,omitempty"`
 }
 

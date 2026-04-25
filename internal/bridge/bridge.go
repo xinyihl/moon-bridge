@@ -145,6 +145,15 @@ func (bridge *Bridge) FromAnthropicWithPlan(response anthropic.MessageResponse, 
 				Arguments: string(block.Input),
 				Status:    "completed",
 			})
+		case "server_tool_use":
+			if block.Name == "web_search" {
+				output = append(output, openai.OutputItem{
+					Type:   "web_search_call",
+					ID:     webSearchItemID(block.ID),
+					Status: "completed",
+					Action: webSearchActionFromRaw(block.Input),
+				})
+			}
 		}
 	}
 	if len(messageContent) > 0 {
@@ -257,6 +266,8 @@ func (bridge *Bridge) convertInput(raw json.RawMessage) ([]anthropic.Message, []
 				ToolUseID: firstNonEmpty(item.CallID, item.ID),
 				Content:   item.Output,
 			})
+		case item.Type == "web_search_call":
+			continue
 		case item.Role == "system" || item.Role == "developer":
 			system = append(system, contentBlocksFromRaw(item.Content)...)
 		case item.Role == "assistant":
@@ -305,7 +316,13 @@ func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error
 					child.Parameters,
 				))
 			}
-		case "web_search", "web_search_preview", "file_search", "computer_use_preview", "image_generation":
+		case "web_search", "web_search_preview":
+			converted = append(converted, anthropic.Tool{
+				Name:    "web_search",
+				Type:    "web_search_20250305",
+				MaxUses: bridge.webSearchMaxUses(),
+			})
+		case "file_search", "computer_use_preview", "image_generation":
 			continue
 		default:
 			return nil, &RequestError{
@@ -317,6 +334,13 @@ func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error
 		}
 	}
 	return converted, nil
+}
+
+func (bridge *Bridge) webSearchMaxUses() int {
+	if bridge.cfg.WebSearchMaxUses > 0 {
+		return bridge.cfg.WebSearchMaxUses
+	}
+	return 8
 }
 
 func anthropicToolFromOpenAIFunction(name string, description string, parameters map[string]any) anthropic.Tool {
@@ -643,6 +667,44 @@ func localShellInputFromAction(action *openai.ToolAction) json.RawMessage {
 		return json.RawMessage(`{"command":[]}`)
 	}
 	return data
+}
+
+func webSearchItemID(providerID string) string {
+	if providerID == "" {
+		return "ws_generated"
+	}
+	if strings.HasPrefix(providerID, "ws_") {
+		return providerID
+	}
+	return "ws_" + providerID
+}
+
+func webSearchActionFromRaw(raw json.RawMessage) *openai.ToolAction {
+	action := &openai.ToolAction{Type: "search"}
+	if len(raw) == 0 || string(raw) == "null" {
+		return action
+	}
+	var input struct {
+		Type    string   `json:"type"`
+		Query   string   `json:"query"`
+		Queries []string `json:"queries"`
+		URL     string   `json:"url"`
+		Pattern string   `json:"pattern"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return action
+	}
+	if input.Type != "" {
+		action.Type = input.Type
+	}
+	action.Query = input.Query
+	action.Queries = input.Queries
+	action.URL = input.URL
+	action.Pattern = input.Pattern
+	if action.Type == "" {
+		action.Type = "search"
+	}
+	return action
 }
 
 func firstNonEmpty(values ...string) string {

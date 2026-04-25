@@ -15,6 +15,8 @@ provider:
   base_url: https://provider.example.test
   api_key: upstream-key
   user_agent: Bun/1.3.13
+  web_search:
+    max_uses: 12
   default_model: gpt-test
   models:
     gpt-test:
@@ -43,6 +45,9 @@ trace_requests: true
 	}
 	if cfg.ProviderUserAgent != "Bun/1.3.13" {
 		t.Fatalf("ProviderUserAgent = %q", cfg.ProviderUserAgent)
+	}
+	if cfg.WebSearchMaxUses != 12 {
+		t.Fatalf("WebSearchMaxUses = %d", cfg.WebSearchMaxUses)
 	}
 	if cfg.DefaultMaxTokens != 1024 {
 		t.Fatalf("DefaultMaxTokens = %d", cfg.DefaultMaxTokens)

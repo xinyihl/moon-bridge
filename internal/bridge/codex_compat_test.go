@@ -47,7 +47,7 @@ func TestToAnthropicIgnoresCodexNativeBuiltInTools(t *testing.T) {
 		Input: json.RawMessage(`"hello"`),
 		Tools: []openai.Tool{
 			{Type: "local_shell"},
-			{Type: "web_search"},
+			{Type: "file_search"},
 		},
 	}
 
@@ -60,6 +60,31 @@ func TestToAnthropicIgnoresCodexNativeBuiltInTools(t *testing.T) {
 	}
 	if converted.Tools[0].Name != "local_shell" {
 		t.Fatalf("tool = %+v", converted.Tools[0])
+	}
+}
+
+func TestToAnthropicConvertsCodexWebSearchTool(t *testing.T) {
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`"search the web"`),
+		Tools: []openai.Tool{
+			{Type: "web_search", SearchContentTypes: []string{"text", "image"}},
+		},
+	}
+
+	converted, _, err := testBridge().ToAnthropic(request)
+	if err != nil {
+		t.Fatalf("ToAnthropic() error = %v", err)
+	}
+	if len(converted.Tools) != 1 {
+		t.Fatalf("tools = %+v", converted.Tools)
+	}
+	tool := converted.Tools[0]
+	if tool.Name != "web_search" || tool.Type != "web_search_20250305" || tool.MaxUses != 8 {
+		t.Fatalf("web search tool = %+v", tool)
+	}
+	if tool.InputSchema != nil {
+		t.Fatalf("InputSchema = %+v", tool.InputSchema)
 	}
 }
 
@@ -148,6 +173,42 @@ func TestFromAnthropicMapsLocalShellToolUseForCodex(t *testing.T) {
 	}
 	if item.Action == nil || len(item.Action.Command) != 3 || item.Action.Command[2] != "pwd" {
 		t.Fatalf("action = %+v", item.Action)
+	}
+}
+
+func TestFromAnthropicMapsWebSearchServerToolUseForCodex(t *testing.T) {
+	response := anthropic.MessageResponse{
+		ID:         "msg_123",
+		Type:       "message",
+		Role:       "assistant",
+		StopReason: "end_turn",
+		Content: []anthropic.ContentBlock{
+			{
+				Type:  "server_tool_use",
+				ID:    "srvtoolu_123",
+				Name:  "web_search",
+				Input: json.RawMessage(`{"type":"search","query":"Kimi K2.6","queries":["Kimi K2.6","Moonshot K2.6"]}`),
+			},
+			{Type: "web_search_tool_result", ToolUseID: "srvtoolu_123", Content: []any{
+				map[string]any{"type": "web_search_result", "url": "https://example.test", "title": "Example"},
+			}},
+			{Type: "text", Text: "Found results."},
+		},
+	}
+
+	converted := testBridge().FromAnthropic(response, "gpt-test")
+	if len(converted.Output) != 2 {
+		t.Fatalf("output = %+v", converted.Output)
+	}
+	item := converted.Output[0]
+	if item.Type != "web_search_call" || item.ID != "ws_srvtoolu_123" || item.Status != "completed" {
+		t.Fatalf("web search item = %+v", item)
+	}
+	if item.Action == nil || item.Action.Type != "search" || item.Action.Query != "Kimi K2.6" || len(item.Action.Queries) != 2 {
+		t.Fatalf("web search action = %+v", item.Action)
+	}
+	if converted.Output[1].Type != "message" || converted.OutputText != "Found results." {
+		t.Fatalf("message output = %+v text=%q", converted.Output[1], converted.OutputText)
 	}
 }
 
@@ -240,5 +301,30 @@ func TestToAnthropicMergesAssistantTextWithFollowingToolCall(t *testing.T) {
 	}
 	if converted.Messages[2].Content[0].ToolUseID != "tool_find" {
 		t.Fatalf("tool result = %+v", converted.Messages[2])
+	}
+}
+
+func TestToAnthropicSkipsCodexWebSearchHistoryItems(t *testing.T) {
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"role":"user","content":[{"type":"input_text","text":"search news"}],"type":"message"},
+			{"id":"ws_123","type":"web_search_call","status":"completed","action":{"type":"search","query":"Kimi K2.6"}},
+			{"role":"assistant","content":[{"type":"output_text","text":"I found news."}],"type":"message"},
+			{"role":"user","content":[{"type":"input_text","text":"summarize it"}],"type":"message"}
+		]`),
+	}
+
+	converted, _, err := testBridge().ToAnthropic(request)
+	if err != nil {
+		t.Fatalf("ToAnthropic() error = %v", err)
+	}
+	if len(converted.Messages) != 3 {
+		t.Fatalf("messages = %+v", converted.Messages)
+	}
+	for _, message := range converted.Messages {
+		if len(message.Content) == 1 && message.Content[0].Text == "" {
+			t.Fatalf("unexpected empty message from web_search_call history: %+v", converted.Messages)
+		}
 	}
 }

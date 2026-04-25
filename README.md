@@ -13,6 +13,7 @@ cp config.example.yml config.yml
 `config.yml` 包含 Provider API Key，已被 `.gitignore` 忽略，不要提交。
 `provider.models` 是 Transform 模式的模型映射表，也是 Codex 启动脚本生成临时模型上下文配置的来源。建议保留 `provider.default_model` 指向的模型别名，Codex 脚本和 E2E 会优先使用它。
 `provider.user_agent` 是 Transform 模式发往 Anthropic Messages 上游的可选 `User-Agent`，可填入 `CaptureAnthropic` trace 中抓到的 Claude Code / Provider 客户端 UA。
+`provider.web_search.max_uses` 控制 Codex `web_search` 转成 Anthropic server-side `web_search_20250305` 时允许的最大搜索次数。
 所有模式都使用 `server.addr` 监听，默认端口为 `38440`。
 
 需要排查转发细节时，可以打开 trace：
@@ -52,7 +53,7 @@ curl -sS http://localhost:38440/v1/responses \
 
 ## 接入 Codex CLI
 
-Moon Bridge 兼容 Codex CLI 使用的 OpenAI Responses 请求形态，包括 `/responses` 路径、`local_shell` 工具、函数工具、工具结果回传和常见 Codex 元数据字段。
+Moon Bridge 兼容 Codex CLI 使用的 OpenAI Responses 请求形态，包括 `/responses` 路径、`local_shell` 工具、函数工具、工具结果回传、`web_search` 内置工具和常见 Codex 元数据字段。Transform 模式会把 Codex `web_search` 声明转成 Anthropic `web_search_20250305` server tool，并把 Anthropic `server_tool_use` 回映射为 Codex 历史里的 `web_search_call`；Codex 抓包里的 `open_page` / `find_in_page` 属于 OpenAI Responses 的 `web_search_call.action` 历史项，Transform 目前不会在本地合成网页抓取，只依赖上游 Anthropic web search 能力。
 
 示例 `~/.codex/config.toml`：
 

@@ -10,6 +10,8 @@ provider:
   api_key: "replace-with-provider-api-key"
   version: "2023-06-01"
   user_agent: "claude-cli/2.1.112 (external, cli)"
+  web_search:
+    max_uses: 8
   default_max_tokens: 1024
   default_model: "moonbridge"
   models:

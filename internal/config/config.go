@@ -32,6 +32,7 @@ type Config struct {
 	ProviderAPIKey    string
 	ProviderVersion   string
 	ProviderUserAgent string
+	WebSearchMaxUses  int
 	DefaultMaxTokens  int
 	ModelMap          map[string]string
 	ProviderModels    map[string]ProviderModelConfig
@@ -90,6 +91,7 @@ type ProviderFileConfig struct {
 	APIKey           string                             `yaml:"api_key"`
 	Version          string                             `yaml:"version"`
 	UserAgent        string                             `yaml:"user_agent"`
+	WebSearch        WebSearchFileConfig                `yaml:"web_search"`
 	DefaultMaxTokens int                                `yaml:"default_max_tokens"`
 	DefaultModel     string                             `yaml:"default_model"`
 	Models           map[string]ProviderModelFileConfig `yaml:"models"`
@@ -112,6 +114,10 @@ type ProviderModelFileConfig struct {
 	Name            string `yaml:"name"`
 	ContextWindow   int    `yaml:"context_window"`
 	MaxOutputTokens int    `yaml:"max_output_tokens"`
+}
+
+type WebSearchFileConfig struct {
+	MaxUses int `yaml:"max_uses"`
 }
 
 type DeveloperFileConfig struct {
@@ -175,6 +181,7 @@ func FromFileConfig(fileConfig FileConfig) (Config, error) {
 		ProviderAPIKey:    strings.TrimSpace(fileConfig.Provider.APIKey),
 		ProviderVersion:   valueOrDefault(strings.TrimSpace(fileConfig.Provider.Version), "2023-06-01"),
 		ProviderUserAgent: strings.TrimSpace(fileConfig.Provider.UserAgent),
+		WebSearchMaxUses:  intOrDefault(fileConfig.Provider.WebSearch.MaxUses, 8),
 		DefaultMaxTokens:  intOrDefault(fileConfig.Provider.DefaultMaxTokens, 1024),
 		ModelMap:          providerModelMap(providerModels),
 		ProviderModels:    providerModels,
