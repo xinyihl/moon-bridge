@@ -63,6 +63,21 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 	})
 	cfg = resolveWebSearchSupport(ctx, cfg, anthropicClient, errors)
 	sessionStats := stats.NewSessionStats()
+	// Set per-model pricing if configured
+	pricing := make(map[string]stats.ModelPricing)
+	for alias, pm := range cfg.ProviderModels {
+		if pm.InputPrice > 0 || pm.OutputPrice > 0 || pm.CacheWritePrice > 0 || pm.CacheReadPrice > 0 {
+			pricing[alias] = stats.ModelPricing{
+				InputPrice:      pm.InputPrice,
+				OutputPrice:     pm.OutputPrice,
+				CacheWritePrice: pm.CacheWritePrice,
+				CacheReadPrice:  pm.CacheReadPrice,
+			}
+		}
+	}
+	if len(pricing) > 0 {
+		sessionStats.SetPricing(pricing)
+	}
 	tracer := mbtrace.New(mbtrace.Config{
 		Enabled: cfg.TraceRequests,
 		Root:    transformTraceRoot(),

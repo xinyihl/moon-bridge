@@ -52,6 +52,25 @@ provider:
       max_output_tokens: 100000
 ```
 
+### 模型定价
+
+`provider.models.<alias>.pricing` 是可选的 per-model 价格配置，单位是元（¥）/ 1K tokens。当某个模型配置了价格后，session 结束时会在日志和控制台输出费用统计。
+
+```yaml
+provider:
+  models:
+    moonbridge:
+      name: "deepseek-v4-pro"
+      pricing:
+        input_price: 2        # 无缓存输入 元/M tokens
+        output_price: 8       # 模型输出
+        cache_write_price: 1  # 缓存写入
+        cache_read_price: 0.2  # 缓存读取
+```
+
+费用计算方式：`input_tokens × input_price + cache_creation × cache_write_price + cache_read × cache_read_price + output_tokens × output_price`，四项均为独立计费。如果价格配置不全（某项为 0 或未设置），该项不产生费用。
+
+
 ### Prompt 缓存
 
 `cache.mode` 控制 Anthropic prompt caching 策略：
@@ -182,6 +201,17 @@ Moon Bridge 支持以下工具类型：
 - `status`：`completed` 或 `incomplete`
 
 当启用 prompt caching 时，Anthropic 侧的缓存创建和命中成本会自动归一化到 OpenAI 风格的用量字段中，方便你在客户端统一查看。
+
+如果配置了模型定价，服务终止时会自动汇总当前 session 的总费用和按模型拆解的费用明细。日志输出示例：
+
+```
+Session Stats: 42 requests, 12m30s duration
+  Input:  154320 tokens (120000 fresh, 20000 cache creation, 14320 cache read)
+  Output: 8500 tokens
+  Cache Hit Rate: 9.3% (saved 14320 tokens)
+  Total Cost: ¥0.3180
+    moonbridge: ¥0.3180 (42 req, 154320 in, 8500 out)
+```
 
 ## 错误处理
 

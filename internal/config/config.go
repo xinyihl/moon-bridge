@@ -84,6 +84,10 @@ type ProviderModelConfig struct {
 	Name            string
 	ContextWindow   int
 	MaxOutputTokens int
+	InputPrice      float64
+	OutputPrice     float64
+	CacheWritePrice float64
+	CacheReadPrice  float64
 }
 
 func (cfg Config) Validate() error {

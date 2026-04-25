@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// ModelPricing holds per-model pricing in RMB per M tokens.
+type ModelPricing struct {
+	InputPrice      float64
+	OutputPrice     float64
+	CacheWritePrice float64
+	CacheReadPrice  float64
+}
+
 // Usage represents token usage from an Anthropic response.
 type Usage struct {
 	InputTokens              int
@@ -16,30 +24,35 @@ type Usage struct {
 	CacheReadInputTokens     int
 }
 
-// SessionStats tracks cumulative token usage across a session.
+// SessionStats tracks cumulative token usage and cost across a session.
 type SessionStats struct {
 	mu sync.RWMutex
 
 	startTime time.Time
 
 	// Cumulative counts
-	totalRequests    int64
-	totalInputTokens int64
-	totalOutputTokens int64
+	totalRequests      int64
+	totalInputTokens   int64
+	totalOutputTokens  int64
 	totalCacheCreation int64
-	totalCacheRead   int64
+	totalCacheRead     int64
 
-	// Per-model breakdown (optional detailed tracking)
-	byModel map[string]*ModelStats
+	// Cumulative cost (RMB)
+	totalCost float64
+
+	// Per-model breakdown
+	byModel  map[string]*ModelStats
+	pricing  map[string]ModelPricing
 }
 
-// ModelStats tracks usage for a specific model.
+// ModelStats tracks usage and cost for a specific model.
 type ModelStats struct {
 	Requests      int64
 	InputTokens   int64
 	OutputTokens  int64
 	CacheCreation int64
 	CacheRead     int64
+	Cost          float64
 }
 
 // NewSessionStats creates a new session stats tracker.
@@ -47,10 +60,19 @@ func NewSessionStats() *SessionStats {
 	return &SessionStats{
 		startTime: time.Now(),
 		byModel:   make(map[string]*ModelStats),
+		pricing:   make(map[string]ModelPricing),
 	}
 }
 
+// SetPricing configures per-model pricing for cost calculation.
+func (s *SessionStats) SetPricing(pricing map[string]ModelPricing) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pricing = pricing
+}
+
 // Record adds a usage record to the session stats.
+// If pricing is configured for the model, cost is computed automatically.
 func (s *SessionStats) Record(model string, usage Usage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -61,6 +83,13 @@ func (s *SessionStats) Record(model string, usage Usage) {
 	s.totalCacheCreation += int64(usage.CacheCreationInputTokens)
 	s.totalCacheRead += int64(usage.CacheReadInputTokens)
 
+	// Compute cost if pricing is available for this model
+	var cost float64
+	if p, ok := s.pricing[model]; ok {
+		cost = computeCost(usage, p)
+		s.totalCost += cost
+	}
+
 	if model != "" {
 		if s.byModel[model] == nil {
 			s.byModel[model] = &ModelStats{}
@@ -70,12 +99,25 @@ func (s *SessionStats) Record(model string, usage Usage) {
 		s.byModel[model].OutputTokens += int64(usage.OutputTokens)
 		s.byModel[model].CacheCreation += int64(usage.CacheCreationInputTokens)
 		s.byModel[model].CacheRead += int64(usage.CacheReadInputTokens)
+		s.byModel[model].Cost += cost
 	}
 }
 
+// computeCost calculates the cost in RMB for a single usage record.
+// All prices are per M tokens.
+func computeCost(usage Usage, p ModelPricing) float64 {
+	freshInput := float64(usage.InputTokens)
+	cacheWrite := float64(usage.CacheCreationInputTokens)
+	cacheRead := float64(usage.CacheReadInputTokens)
+	output := float64(usage.OutputTokens)
+
+	return freshInput*p.InputPrice/1000000 +
+		cacheWrite*p.CacheWritePrice/1000000 +
+		cacheRead*p.CacheReadPrice/1000000 +
+		output*p.OutputPrice/1000000
+}
+
 // CacheHitRate returns the cache hit rate as a percentage.
-// Rate = cache_read_tokens / (input_tokens + cache_creation + cache_read)
-// Returns 0 if the receiver is nil.
 func (s *SessionStats) CacheHitRate() float64 {
 	if s == nil {
 		return 0
@@ -110,7 +152,21 @@ func (s *SessionStats) Summary() Summary {
 		CacheRead:           s.totalCacheRead,
 		CacheHitRate:        cacheHitRate,
 		EffectiveInputSaved: s.totalCacheRead,
+		TotalCost:           s.totalCost,
+		ByModel:             copyByModel(s.byModel),
 	}
+}
+
+func copyByModel(src map[string]*ModelStats) map[string]*ModelStats {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]*ModelStats, len(src))
+	for k, v := range src {
+		cp := *v
+		dst[k] = &cp
+	}
+	return dst
 }
 
 // Summary is a snapshot of session stats.
@@ -123,11 +179,13 @@ type Summary struct {
 	CacheRead           int64
 	CacheHitRate        float64
 	EffectiveInputSaved int64
+	TotalCost           float64
+	ByModel             map[string]*ModelStats
 }
 
 // LogValue implements slog.LogValuer for structured logging.
 func (s Summary) LogValue() slog.Value {
-	return slog.GroupValue(
+	attrs := []slog.Attr{
 		slog.Int64("requests", s.Requests),
 		slog.Int64("input_tokens", s.InputTokens),
 		slog.Int64("output_tokens", s.OutputTokens),
@@ -136,7 +194,11 @@ func (s Summary) LogValue() slog.Value {
 		slog.Float64("cache_hit_rate", s.CacheHitRate),
 		slog.Int64("cache_saved_tokens", s.EffectiveInputSaved),
 		slog.Duration("duration", s.Duration),
-	)
+	}
+	if s.TotalCost > 0 {
+		attrs = append(attrs, slog.Float64("cost_cny", s.TotalCost))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 // WriteSummary writes a human-readable summary to the writer.
@@ -150,5 +212,15 @@ func WriteSummary(w io.Writer, s Summary) {
 	fmt.Fprintf(w, "  Output: %d tokens\n", s.OutputTokens)
 	if s.CacheHitRate > 0 {
 		fmt.Fprintf(w, "  Cache Hit Rate: %.1f%% (saved %d tokens)\n", s.CacheHitRate, s.EffectiveInputSaved)
+	}
+	if s.TotalCost > 0 {
+		fmt.Fprintf(w, "  Total Cost: ¥%.4f\n", s.TotalCost)
+		// Per-model breakdown
+		for model, ms := range s.ByModel {
+			if ms.Cost > 0 {
+				fmt.Fprintf(w, "    %s: ¥%.4f (%d req, %d in, %d out)\n",
+					model, ms.Cost, ms.Requests, ms.InputTokens+ms.CacheCreation+ms.CacheRead, ms.OutputTokens)
+			}
+		}
 	}
 }

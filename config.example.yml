@@ -35,6 +35,13 @@ provider:
       name: "deepseek-v4-pro"
       context_window: 1000000
       max_output_tokens: 384000
+      # Optional per-model pricing in RMB per 1K tokens.
+      # When configured, session summary includes cost breakdown.
+      pricing:
+        input_price: 2
+        output_price: 8
+        cache_write_price: 1
+        cache_read_price: 0.2
 
 cache:
   mode: "explicit"  # off / automatic / explicit / hybrid

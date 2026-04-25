@@ -51,9 +51,18 @@ type CacheFileConfig struct {
 }
 
 type ProviderModelFileConfig struct {
-	Name            string `yaml:"name"`
-	ContextWindow   int    `yaml:"context_window"`
-	MaxOutputTokens int    `yaml:"max_output_tokens"`
+	Name            string                 `yaml:"name"`
+	ContextWindow   int                    `yaml:"context_window"`
+	MaxOutputTokens int                    `yaml:"max_output_tokens"`
+	Pricing         ModelPricingFileConfig `yaml:"pricing"`
+}
+
+// ModelPricingFileConfig holds optional per-model pricing in RMB per M tokens.
+type ModelPricingFileConfig struct {
+	InputPrice      float64 `yaml:"input_price"`
+	OutputPrice     float64 `yaml:"output_price"`
+	CacheWritePrice float64 `yaml:"cache_write_price"`
+	CacheReadPrice  float64 `yaml:"cache_read_price"`
 }
 
 type WebSearchFileConfig struct {
@@ -207,6 +216,10 @@ func FromProviderModelFileConfig(fileConfig map[string]ProviderModelFileConfig) 
 			Name:            strings.TrimSpace(model.Name),
 			ContextWindow:   model.ContextWindow,
 			MaxOutputTokens: model.MaxOutputTokens,
+			InputPrice:      model.Pricing.InputPrice,
+			OutputPrice:     model.Pricing.OutputPrice,
+			CacheWritePrice: model.Pricing.CacheWritePrice,
+			CacheReadPrice:  model.Pricing.CacheReadPrice,
 		}
 	}
 	return models
