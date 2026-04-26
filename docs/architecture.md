@@ -232,7 +232,13 @@ Anthropic Messages API 要求轮次内 `tool_use` block 不能跨消息分割。
 - 配置中通过 `provider.providers` 定义多个 Provider（DeepSeek、OpenAI、Anthropic 等）
 - `provider.models` 中的每个模型别名可指定 `provider` 键，决定请求发往哪个上游
 - 每个 Provider 拥有独立的 `http.Client` 和连接池配置
-- 当前公开示例以多 Provider 结构为准；代码仍可解析单 Provider `base_url` / `api_key` 作为 `default`，主要用于本地迁移和测试
+- `Bridge.ProviderFor()` 不再硬编码返回 `"default"`，无显式映射时返回空字符串
+- server 侧 `resolveProvider()` 使用三级 fallback 链：
+  1. `ProviderManager.ClientFor(modelAlias)` — 按 model alias 精确路由
+  2. `ClientForKey(providerKey)` — 按 Bridge.ProviderFor 返回的 key 路由
+  3. 遍历任意可用 Provider — 最后兜底
+- `handleOpenAIResponse()` 在 `Bridge.ProviderFor` 返回空时调用 `ProviderKeyForModel()` 二次解析路由 key
+- `app.resolveDefaultClient()` 安全处理无 default provider 场景：defaultKey 为空或 client 不可用时返回 nil，下游 web search probing 和 fallback Provider 包装条件性跳过
 
 ### 会话隔离
 

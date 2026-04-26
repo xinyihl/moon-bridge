@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"moonbridge/internal/anthropic"
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
@@ -63,11 +64,9 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 		return fmt.Errorf("init provider manager: %w", err)
 	}
 
-	// Use the default provider client for web search probing and fallback.
-	defaultClient, err := providerMgr.ClientForKey(providerMgr.DefaultKey())
-	if err != nil {
-		return fmt.Errorf("default provider not available: %w", err)
-	}
+	// Resolve a fallback client for web search probing and server fallback.
+	// When no "default" provider is configured, probe and fallback are skipped.
+	defaultClient := resolveDefaultClient(providerMgr, errors)
 	cfg = resolveWebSearchSupport(ctx, cfg, defaultClient, errors)
 
 	sessionStats := stats.NewSessionStats()
@@ -94,14 +93,17 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 
 	// Determine the default provider to use as the fallback Provider.
 	// *anthropic.Client directly implements server.Provider.
-	var fallbackProvider server.Provider = defaultClient
+	var fallbackProvider server.Provider
+	if defaultClient != nil {
+		fallbackProvider = defaultClient
 
-	// Wrap with injected search orchestrator when configured.
-	if websearchinjected.IsEnabled(cfg) {
-		orchestrator := websearchinjected.WrapProvider(defaultClient, cfg.TavilyAPIKey, cfg.FirecrawlAPIKey, cfg.SearchMaxRounds)
-		// *websearch.Orchestrator also implements server.Provider.
-		fallbackProvider = orchestrator
-		logger.Info("injected web search enabled", "tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "")
+		// Wrap with injected search orchestrator when configured.
+		if websearchinjected.IsEnabled(cfg) {
+			orchestrator := websearchinjected.WrapProvider(defaultClient, cfg.TavilyAPIKey, cfg.FirecrawlAPIKey, cfg.SearchMaxRounds)
+			// *websearch.Orchestrator also implements server.Provider.
+			fallbackProvider = orchestrator
+			logger.Info("injected web search enabled", "tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "")
+		}
 	}
 
 	handler := server.New(server.Config{
@@ -114,6 +116,21 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 	})
 
 	return runHTTPServer(ctx, cfg.Addr, handler, errors, sessionStats)
+}
+
+// resolveDefaultClient returns the provider client for the default key.
+// Returns nil when no default provider is configured (all models use explicit routing).
+func resolveDefaultClient(pm *provider.ProviderManager, errors io.Writer) *anthropic.Client {
+	if pm.DefaultKey() == "" {
+		logger.Warn("no default provider configured; web search probing and server fallback disabled")
+		return nil
+	}
+	client, err := pm.ClientForKey(pm.DefaultKey())
+	if err != nil {
+		logger.Warn("default provider client not available", "error", err)
+		return nil
+	}
+	return client
 }
 
 // buildProviderDefsFromConfig converts config into provider definition map.

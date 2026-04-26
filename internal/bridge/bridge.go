@@ -381,11 +381,16 @@ func (bridge *Bridge) ErrorResponse(err error) (int, openai.ErrorResponse) {
 }
 
 // ProviderFor returns the provider key that serves the given model alias.
+// Returns empty string when no explicit mapping exists.
 func (bridge *Bridge) ProviderFor(modelAlias string) string {
 	if bridge.cfg.ProviderModels != nil {
-		if pm, ok := bridge.cfg.ProviderModels[modelAlias]; ok && pm.Provider != "" {
-			return pm.Provider
+		if pm, ok := bridge.cfg.ProviderModels[modelAlias]; ok {
+			if pm.Provider != "" {
+				return pm.Provider
+			}
+			// Model exists but no explicit provider key; let caller resolve default.
+			return ""
 		}
 	}
-	return "default"
+	return ""
 }

@@ -135,6 +135,15 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 
 	// Resolve the provider for this request.
 	effectiveProvider := server.resolveProvider(responsesRequest.Model, server.bridge.ProviderFor(responsesRequest.Model))
+	if effectiveProvider == nil {
+		log.Error("no provider available for model", "model", responsesRequest.Model)
+		writeOpenAIError(writer, http.StatusBadGateway, openai.ErrorResponse{Error: openai.ErrorObject{
+			Message: fmt.Sprintf("no upstream provider configured for model %q", responsesRequest.Model),
+			Type:    "server_error",
+			Code:    "provider_error",
+		}})
+		return
+	}
 
 	if responsesRequest.Stream {
 		log.Debug("handling streaming request", "model", responsesRequest.Model)
@@ -234,25 +243,6 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 // resolveProvider selects the correct Provider for a given model alias.
 // If a ProviderManager is configured, it uses it for routing.
 // Otherwise it falls back to the single default provider.
-func (server *Server) resolveProvider(modelAlias string, providerKey string) Provider {
-	if server.providerMgr != nil {
-		client, err := server.providerMgr.ClientForKey(providerKey)
-		if err == nil && client != nil {
-			return &anthropicClientWrapper{client: client}
-		}
-		// Fallback: try the first available client.
-		for _, k := range server.providerMgr.ProviderKeys() {
-			c, err := server.providerMgr.ClientForKey(k)
-			if err == nil && c != nil {
-				return &anthropicClientWrapper{client: c}
-			}
-		}
-	}
-	if server.provider != nil {
-		return server.provider
-	}
-	return nil
-}
 
 func (server *Server) writeTrace(record mbtrace.Record) {
 	if server.tracer == nil || !server.tracer.Enabled() {
@@ -343,8 +333,13 @@ func (server *Server) handleOpenAIResponse(writer http.ResponseWriter, request *
 		return
 	}
 
-	baseURL := server.providerMgr.ProviderBaseURL(providerKey)
-	apiKey := server.providerMgr.ProviderAPIKey(providerKey)
+	// Resolve provider key from model alias when Bridge.ProviderFor returned empty.
+	resolvedKey := providerKey
+	if resolvedKey == "" {
+		resolvedKey = server.providerMgr.ProviderKeyForModel(responsesRequest.Model)
+	}
+	baseURL := server.providerMgr.ProviderBaseURL(resolvedKey)
+	apiKey := server.providerMgr.ProviderAPIKey(resolvedKey)
 	if baseURL == "" {
 		log.Error("openai provider has no base_url", "provider", providerKey)
 		writeOpenAIError(writer, http.StatusBadGateway, openai.ErrorResponse{Error: openai.ErrorObject{
@@ -517,4 +512,28 @@ func statsUsageFromOpenAIUsage(usage openai.Usage) (stats.Usage, bool) {
 		OutputTokens:         usage.OutputTokens,
 		CacheReadInputTokens: cacheRead,
 	}, true
+}
+func (server *Server) resolveProvider(modelAlias string, providerKey string) Provider {
+	if server.providerMgr != nil {
+		// First, try routing by model alias.
+		if _, client, err := server.providerMgr.ClientFor(modelAlias); err == nil && client != nil {
+			return &anthropicClientWrapper{client: client}
+		}
+		// Fallback: try providerKey directly.
+		if providerKey != "" {
+			if client, err := server.providerMgr.ClientForKey(providerKey); err == nil && client != nil {
+				return &anthropicClientWrapper{client: client}
+			}
+		}
+		// Last resort: try any available provider.
+		for _, k := range server.providerMgr.ProviderKeys() {
+			if c, err := server.providerMgr.ClientForKey(k); err == nil && c != nil {
+				return &anthropicClientWrapper{client: c}
+			}
+		}
+	}
+	if server.provider != nil {
+		return server.provider
+	}
+	return nil
 }

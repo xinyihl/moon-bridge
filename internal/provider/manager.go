@@ -289,3 +289,12 @@ func (pm *ProviderManager) ProviderAPIKey(key string) string {
 	}
 	return cfg.APIKey
 }
+// ProviderKeyForModel returns the provider key that serves the given model alias.
+// Falls back to defaultK when the model has no explicit route.
+func (pm *ProviderManager) ProviderKeyForModel(modelAlias string) string {
+	route, ok := pm.routes[modelAlias]
+	if !ok || route.Provider == "" {
+		return pm.defaultK
+	}
+	return route.Provider
+}
