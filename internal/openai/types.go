@@ -57,6 +57,7 @@ type OutputItem struct {
 	ID        string        `json:"id,omitempty"`
 	Status    string        `json:"status,omitempty"`
 	Role      string        `json:"role,omitempty"`
+	Phase     string        `json:"phase,omitempty"`
 	Content   []ContentPart `json:"content,omitempty"`
 	CallID    string        `json:"call_id,omitempty"`
 	Name      string        `json:"name,omitempty"`

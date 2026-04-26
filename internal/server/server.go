@@ -233,6 +233,13 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.WriteHeader(http.StatusOK)
 
+	// Emit a commentary preamble so the client sees activity immediately
+	// while we collect the full upstream response.
+	preamble := server.bridge.BuildPreambleEvents(responsesRequest.Model)
+	for _, ev := range preamble.Events {
+		writeSSE(writer, ev)
+	}
+
 	var events []anthropic.StreamEvent
 	for {
 		event, err := stream.Next()
@@ -248,7 +255,13 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 		events = append(events, event)
 	}
 
-	openAIEvents := server.bridge.ConvertStreamEventsWithContext(events, responsesRequest.Model, context, sess)
+	streamOpts := bridge.StreamOptions{
+		SequenceOffset:       preamble.NextSequence,
+		SkipInitialLifecycle: true,
+		OutputIndexOffset:    preamble.PreambleOutputCount,
+		ResponseID:           preamble.ResponseID,
+	}
+	openAIEvents := server.bridge.ConvertStreamEventsWithContext(events, responsesRequest.Model, context, sess, streamOpts)
 	record.AnthropicStreamEvents = events
 	record.OpenAIStreamEvents = openAIEvents
 	server.writeTrace(record)

@@ -9,11 +9,27 @@ import (
 	"moonbridge/internal/session"
 )
 
-func (bridge *Bridge) ConvertStreamEvents(events []anthropic.StreamEvent, model string) []openai.StreamEvent {
-	return bridge.ConvertStreamEventsWithContext(events, model, ConversionContext{}, nil)
+// StreamOptions controls how the stream converter behaves when a preamble
+// has already been emitted to the client.
+type StreamOptions struct {
+	// SequenceOffset is added to every sequence number so numbering
+	// continues from the preamble.
+	SequenceOffset int64
+	// SkipInitialLifecycle causes the converter to drop the response.created
+	// and response.in_progress events (already sent in the preamble).
+	SkipInitialLifecycle bool
+	// OutputIndexOffset shifts all output_index values so real content
+	// items don't collide with preamble items.
+	OutputIndexOffset int
+	// ResponseID overrides the response ID to match the preamble.
+	ResponseID string
 }
 
-func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEvent, model string, context ConversionContext, sess *session.Session) []openai.StreamEvent {
+func (bridge *Bridge) ConvertStreamEvents(events []anthropic.StreamEvent, model string) []openai.StreamEvent {
+	return bridge.ConvertStreamEventsWithContext(events, model, ConversionContext{}, nil, StreamOptions{})
+}
+
+func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEvent, model string, context ConversionContext, sess *session.Session, opts StreamOptions) []openai.StreamEvent {
 	converter := streamConverter{
 		bridge:                  bridge,
 		model:                   model,
@@ -27,6 +43,7 @@ func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEv
 		webSearchInputs:         map[int]string{},
 		itemIDs:                 map[int]string{},
 		outputIndexes:           map[int]int{},
+		opts:                    opts,
 	}
 	if bridge.cfg.DeepSeekV4Enabled() && sess != nil && sess.DeepSeek != nil {
 		converter.deepseek = deepseekv4.NewStreamState()
@@ -60,17 +77,25 @@ type streamConverter struct {
 	deepseek                *deepseekv4.StreamState
 	itemIDs                 map[int]string
 	outputIndexes           map[int]int
+	opts                    StreamOptions
 }
 
 func (converter *streamConverter) convert(event anthropic.StreamEvent) []openai.StreamEvent {
 	switch event.Type {
 	case "message_start":
+		rid := responseID(event.Message.ID)
+		if converter.opts.ResponseID != "" {
+			rid = converter.opts.ResponseID
+		}
 		converter.response = openai.Response{
-			ID:     responseID(event.Message.ID),
+			ID:     rid,
 			Object: "response",
 			Status: "in_progress",
 			Model:  converter.model,
 			Output: []openai.OutputItem{},
+		}
+		if converter.opts.SkipInitialLifecycle {
+			return nil
 		}
 		return []openai.StreamEvent{
 			converter.lifecycle("response.created"),
@@ -108,7 +133,7 @@ func (converter *streamConverter) convert(event anthropic.StreamEvent) []openai.
 }
 
 func (converter *streamConverter) outputAt(index int) openai.OutputItem {
-	outputIndex := converter.outputIndex(index)
+	outputIndex := converter.sliceIndex(index)
 	if outputIndex < len(converter.response.Output) {
 		return converter.response.Output[outputIndex]
 	}
@@ -116,7 +141,7 @@ func (converter *streamConverter) outputAt(index int) openai.OutputItem {
 }
 
 func (converter *streamConverter) setOutput(index int, item openai.OutputItem) {
-	converter.response.Output[converter.outputIndex(index)] = item
+	converter.response.Output[converter.sliceIndex(index)] = item
 }
 
 func (converter *streamConverter) addOutput(index int, item openai.OutputItem) {
@@ -130,19 +155,26 @@ func (converter *streamConverter) hasOutput(index int) bool {
 }
 
 func (converter *streamConverter) removeOutput(index int) {
-	outputIndex, ok := converter.outputIndexes[index]
+	sliceIdx, ok := converter.outputIndexes[index]
 	if !ok {
 		return
 	}
-	if outputIndex == len(converter.response.Output)-1 {
-		converter.response.Output = converter.response.Output[:outputIndex]
+	if sliceIdx == len(converter.response.Output)-1 {
+		converter.response.Output = converter.response.Output[:sliceIdx]
 		delete(converter.outputIndexes, index)
 		delete(converter.itemIDs, index)
 	}
 }
 
-func (converter *streamConverter) outputIndex(index int) int {
+// sliceIndex returns the position in the internal response.Output slice.
+func (converter *streamConverter) sliceIndex(index int) int {
 	return converter.outputIndexes[index]
+}
+
+// outputIndex returns the wire-level output index for SSE events,
+// accounting for any preamble items.
+func (converter *streamConverter) outputIndex(index int) int {
+	return converter.outputIndexes[index] + converter.opts.OutputIndexOffset
 }
 
 func (converter *streamConverter) lifecycle(event string) openai.StreamEvent {
@@ -185,7 +217,7 @@ func (converter *streamConverter) contentPart(event string, outputIndex int, con
 
 func (converter *streamConverter) next() int64 {
 	converter.sequence++
-	return converter.sequence
+	return converter.sequence + converter.opts.SequenceOffset
 }
 
 func statusForLifecycle(event string, current string) string {

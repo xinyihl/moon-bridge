@@ -265,7 +265,7 @@ Anthropic `tool_use` → OpenAI 响应条目：
 
 ## 流式传输
 
-Anthropic SSE 事件通过状态机转换为 OpenAI Responses SSE，状态机跟踪内容索引、输出索引、条目 ID 和序列号。
+Anthropic SSE 事件通过状态机转换为 OpenAI Responses SSE，状态机跟踪内容索引、输出索引、条目 ID 和序列号。由于当前采用“先收集再转换”的假流式架构，服务器会在开始收集上游响应前立即下发一条 `phase: "commentary"` 的 preamble 消息（"Collecting from upstream..."），让客户端立即看到活动状态。Preamble 事件包含完整的 `response.created` → `response.in_progress` → commentary 输出项生命周期；后续真实上游事件通过 `StreamOptions` 跳过重复的生命周期事件、偏移序列号和输出索引，保持同一 response ID。Commentary 消息不会被 Codex 纳入后续请求上下文。
 
 | Anthropic 事件 | OpenAI Responses SSE 事件 |
 | --- | --- |
@@ -283,11 +283,12 @@ Anthropic SSE 事件通过状态机转换为 OpenAI Responses SSE，状态机跟
 
 SSE 不变量：
 
-- 每个事件携带单调递增的 `sequence_number`。
+- 每个事件携带单调递增的 `sequence_number`（preamble 和真实内容跨越连续编号）。
 - 文本增量事件包含 `item_id`、`output_index` 和 `content_index`。
 - 最终用量直到 `message_stop` 才发出。
 - Web search 和自定义工具的 `input_json_delta` 流式事件在内部累积，在 `content_block_stop` 时发出。
 - 提供商连接失败产生 `response.failed` 并关闭 SSE 连接。
+- Preamble commentary 消息带 `phase: "commentary"`，占用 `output_index: 0`；真实内容从 `output_index: 1` 开始。
 
 ## 停止原因映射
 
