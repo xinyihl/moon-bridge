@@ -337,7 +337,7 @@ OpenAI 协议 Provider 会创建一个与上游的直连 HTTP 代理，支持流
 Summary：Session Cache Hit Rate(AVG): 25.0%, Billing: 3.04 CNY
 ```
 
-费用依据 `provider.providers.<key>.models.<alias>.pricing` 配置计算，价格单位是人民币元 / M tokens。
+费用依据 `provider.providers.<key>.models.<upstream>.pricing` 配置计算，价格单位是人民币元 / M tokens。价格定义在 Provider 的模型目录中，通过 `routes` 关联到别名后自动生效。
 
 配置示例：
 
@@ -347,7 +347,7 @@ provider:
     deepseek:
       # ...
       models:
-        gpt-5.4:
+        deepseek-v4-pro:
           pricing:
             input_price: 1          # ¥1 / M tokens
             output_price: 2         # ¥2 / M tokens

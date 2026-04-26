@@ -71,7 +71,7 @@ func main() {
 		return
 	}
 	if *printCodexConfig != "" {
-		printCodexConfigToml(*printCodexConfig, *codexBaseURL, cfg.ProviderModelFor(*printCodexConfig))
+		printCodexConfigToml(*printCodexConfig, *codexBaseURL, cfg.RouteFor(*printCodexConfig))
 		return
 	}
 
@@ -83,14 +83,14 @@ func main() {
 	}
 }
 
-func printCodexConfigToml(modelAlias string, baseURL string, model config.ProviderModelConfig) {
+func printCodexConfigToml(modelAlias string, baseURL string, route config.RouteEntry) {
 	fmt.Printf("model = %q\n", modelAlias)
 	fmt.Println(`model_provider = "moonbridge"`)
-	if model.ContextWindow > 0 {
-		fmt.Printf("model_context_window = %d\n", model.ContextWindow)
+	if route.ContextWindow > 0 {
+		fmt.Printf("model_context_window = %d\n", route.ContextWindow)
 	}
-	if model.MaxOutputTokens > 0 {
-		fmt.Printf("model_max_output_tokens = %d\n", model.MaxOutputTokens)
+	if route.MaxOutputTokens > 0 {
+		fmt.Printf("model_max_output_tokens = %d\n", route.MaxOutputTokens)
 	}
 	fmt.Println()
 	fmt.Println("[model_providers.moonbridge]")

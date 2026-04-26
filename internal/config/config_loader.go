@@ -34,6 +34,7 @@ type ProviderFileConfig struct {
 	DefaultMaxTokens int                              `yaml:"default_max_tokens"`
 	DefaultModel     string                           `yaml:"default_model"`
 	Providers        map[string]ProviderDefFileConfig `yaml:"providers"`
+	Routes           map[string]string                `yaml:"routes"`
 	DeepSeekV4       bool                             `yaml:"deepseek_v4"`
 }
 
@@ -51,8 +52,9 @@ type CacheFileConfig struct {
 	MinBreakpointTokens      int    `yaml:"min_breakpoint_tokens"`
 }
 
+// ProviderModelFileConfig defines metadata for a model in a provider's catalog.
+// The map key is the upstream model name.
 type ProviderModelFileConfig struct {
-	Name            string                 `yaml:"name"`
 	ContextWindow   int                    `yaml:"context_window"`
 	MaxOutputTokens int                    `yaml:"max_output_tokens"`
 	Pricing         ModelPricingFileConfig `yaml:"pricing"`
@@ -68,7 +70,6 @@ type ProviderDefFileConfig struct {
 	Models    map[string]ProviderModelFileConfig `yaml:"models"`
 }
 
-// ModelPricingFileConfig holds optional per-model pricing in RMB per M tokens.
 type ModelPricingFileConfig struct {
 	InputPrice      float64 `yaml:"input_price"`
 	OutputPrice     float64 `yaml:"output_price"`
@@ -145,22 +146,12 @@ func FromFileConfig(fileConfig FileConfig) (Config, error) {
 		return Config{}, err
 	}
 	providerDefs := fromProviderDefFileConfig(fileConfig.Provider.Providers)
-	providerModels := providerModelsFromDefs(fileConfig.Provider.Providers)
+	routes := buildRoutes(fileConfig.Provider.Routes, providerDefs)
 
-	// If multi-provider is configured, legacy fields aren't required for Transform.
-	// But we still set ProviderBaseURL/ProviderAPIKey for backward compat with
-	// Capture modes that rely on them.
 	legacyBaseURL := strings.TrimRight(strings.TrimSpace(fileConfig.Provider.BaseURL), "/")
 	legacyAPIKey := strings.TrimSpace(fileConfig.Provider.APIKey)
 	legacyVersion := valueOrDefault(strings.TrimSpace(fileConfig.Provider.Version), "2023-06-01")
 	legacyUserAgent := strings.TrimSpace(fileConfig.Provider.UserAgent)
-
-	// If multi-provider is defined, use those as the primary source.
-	// Otherwise fall through with legacy fields.
-	if len(providerDefs) == 0 {
-		// No multi-provider config: legacy mode.
-		// Use providerDefs populated from legacy fields below.
-	}
 
 	cfg := Config{
 		Mode:              mode,
@@ -180,8 +171,7 @@ func FromFileConfig(fileConfig FileConfig) (Config, error) {
 		FirecrawlAPIKey:   strings.TrimSpace(fileConfig.Provider.WebSearch.FirecrawlAPIKey),
 		SearchMaxRounds:   intOrDefault(fileConfig.Provider.WebSearch.SearchMaxRounds, 5),
 		DefaultMaxTokens:  intOrDefault(fileConfig.Provider.DefaultMaxTokens, 1024),
-		ModelMap:          providerModelMap(providerModels),
-		ProviderModels:    providerModels,
+		Routes:            routes,
 		ProviderDefs:      providerDefs,
 		Cache:             fromCacheFileConfig(fileConfig.Cache),
 		ResponseProxy:     FromResponseProxyFileConfig(fileConfig.Developer.Proxy.Response),
@@ -250,27 +240,49 @@ func FromAnthropicProxyFileConfig(fileConfig ProxyFileConfig) AnthropicProxyConf
 	}
 }
 
-func providerModelsFromDefs(providers map[string]ProviderDefFileConfig) map[string]ProviderModelConfig {
-	models := make(map[string]ProviderModelConfig)
-	for providerKey, def := range providers {
-		for alias, model := range def.Models {
-			trimmedAlias := strings.TrimSpace(alias)
-			if trimmedAlias == "" {
-				continue
-			}
-			models[trimmedAlias] = ProviderModelConfig{
-				Name:            strings.TrimSpace(model.Name),
-				Provider:        strings.TrimSpace(providerKey),
-				ContextWindow:   model.ContextWindow,
-				MaxOutputTokens: model.MaxOutputTokens,
-				InputPrice:      model.Pricing.InputPrice,
-				OutputPrice:     model.Pricing.OutputPrice,
-				CacheWritePrice: model.Pricing.CacheWritePrice,
-				CacheReadPrice:  model.Pricing.CacheReadPrice,
+// buildRoutes parses the "provider/model" route strings and merges model metadata
+// from provider definitions.
+func buildRoutes(rawRoutes map[string]string, providerDefs map[string]ProviderDef) map[string]RouteEntry {
+	if len(rawRoutes) == 0 {
+		return nil
+	}
+	routes := make(map[string]RouteEntry, len(rawRoutes))
+	for alias, spec := range rawRoutes {
+		trimmedAlias := strings.TrimSpace(alias)
+		if trimmedAlias == "" {
+			continue
+		}
+		providerKey, modelName := parseRouteSpec(spec)
+		entry := RouteEntry{
+			Provider: providerKey,
+			Model:    modelName,
+		}
+		// Merge metadata from provider's model catalog if available.
+		if def, ok := providerDefs[providerKey]; ok {
+			if meta, ok := def.Models[modelName]; ok {
+				entry.ContextWindow = meta.ContextWindow
+				entry.MaxOutputTokens = meta.MaxOutputTokens
+				entry.InputPrice = meta.InputPrice
+				entry.OutputPrice = meta.OutputPrice
+				entry.CacheWritePrice = meta.CacheWritePrice
+				entry.CacheReadPrice = meta.CacheReadPrice
 			}
 		}
+		routes[trimmedAlias] = entry
 	}
-	return models
+	return routes
+}
+
+// parseRouteSpec splits "provider/model" into (provider, model).
+// If no slash is present, the whole string is treated as the model name
+// with provider defaulting to "default".
+func parseRouteSpec(spec string) (string, string) {
+	spec = strings.TrimSpace(spec)
+	slash := strings.IndexByte(spec, '/')
+	if slash < 0 {
+		return "default", spec
+	}
+	return strings.TrimSpace(spec[:slash]), strings.TrimSpace(spec[slash+1:])
 }
 
 func fromProviderDefFileConfig(fileConfig map[string]ProviderDefFileConfig) map[string]ProviderDef {
@@ -284,6 +296,17 @@ func fromProviderDefFileConfig(fileConfig map[string]ProviderDefFileConfig) map[
 			continue
 		}
 		wsSupport, _ := parseWebSearchSupport(def.WebSearch.Support)
+		models := make(map[string]ModelMeta, len(def.Models))
+		for name, m := range def.Models {
+			models[strings.TrimSpace(name)] = ModelMeta{
+				ContextWindow:   m.ContextWindow,
+				MaxOutputTokens: m.MaxOutputTokens,
+				InputPrice:      m.Pricing.InputPrice,
+				OutputPrice:     m.Pricing.OutputPrice,
+				CacheWritePrice: m.Pricing.CacheWritePrice,
+				CacheReadPrice:  m.Pricing.CacheReadPrice,
+			}
+		}
 		pd := ProviderDef{
 			BaseURL:          strings.TrimRight(strings.TrimSpace(def.BaseURL), "/"),
 			APIKey:           strings.TrimSpace(def.APIKey),
@@ -295,6 +318,7 @@ func fromProviderDefFileConfig(fileConfig map[string]ProviderDefFileConfig) map[
 			TavilyAPIKey:     strings.TrimSpace(def.WebSearch.TavilyAPIKey),
 			FirecrawlAPIKey:  strings.TrimSpace(def.WebSearch.FirecrawlAPIKey),
 			SearchMaxRounds:  def.WebSearch.SearchMaxRounds,
+			Models:           models,
 		}
 		defs[trimmedKey] = pd
 	}

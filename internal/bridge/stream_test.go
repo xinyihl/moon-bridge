@@ -542,7 +542,7 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 	bridgeUnderTest := testBridgeWithConfig(config.Config{
 		DeepSeekV4:       true,
 		DefaultMaxTokens: 1024,
-		ModelMap:         map[string]string{"gpt-test": "deepseek-v4-pro"},
+		Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
 		Cache: config.CacheConfig{
 			Mode:          "off",
 			PromptCaching: true,
@@ -617,7 +617,7 @@ func TestDeepSeekSignatureOnlyThinkingIsReinjectedForToolCalls(t *testing.T) {
 	bridgeUnderTest := testBridgeWithConfig(config.Config{
 		DeepSeekV4:       true,
 		DefaultMaxTokens: 1024,
-		ModelMap:         map[string]string{"gpt-test": "deepseek-v4-pro"},
+		Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
 		Cache: config.CacheConfig{
 			Mode:          "off",
 			PromptCaching: true,
@@ -676,7 +676,7 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 	bridgeUnderTest := testBridgeWithConfig(config.Config{
 		DeepSeekV4:       true,
 		DefaultMaxTokens: 1024,
-		ModelMap:         map[string]string{"gpt-test": "deepseek-v4-pro"},
+		Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
 		Cache: config.CacheConfig{
 			Mode:          "off",
 			PromptCaching: true,

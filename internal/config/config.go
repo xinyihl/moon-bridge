@@ -47,16 +47,28 @@ type Config struct {
 	FirecrawlAPIKey   string
 	SearchMaxRounds   int
 	DefaultMaxTokens  int
-	ModelMap          map[string]string
-	ProviderModels    map[string]ProviderModelConfig
-	ProviderDefs      map[string]ProviderDef
-	Cache             CacheConfig
-	ResponseProxy     ResponseProxyConfig
-	AnthropicProxy    AnthropicProxyConfig
-	DeepSeekV4        bool
+	// Routes maps a model alias to "provider/upstream_model".
+	Routes         map[string]RouteEntry
+	ProviderDefs   map[string]ProviderDef
+	Cache          CacheConfig
+	ResponseProxy  ResponseProxyConfig
+	AnthropicProxy AnthropicProxyConfig
+	DeepSeekV4     bool
 }
 
-// ProviderDef defines a single upstream provider for multi-provider mode.
+// RouteEntry is a resolved route: alias -> provider key + upstream model name + metadata.
+type RouteEntry struct {
+	Provider        string
+	Model           string // upstream model name
+	ContextWindow   int
+	MaxOutputTokens int
+	InputPrice      float64
+	OutputPrice     float64
+	CacheWritePrice float64
+	CacheReadPrice  float64
+}
+
+// ProviderDef defines a single upstream provider.
 type ProviderDef struct {
 	BaseURL          string
 	APIKey           string
@@ -68,6 +80,18 @@ type ProviderDef struct {
 	TavilyAPIKey     string
 	FirecrawlAPIKey  string
 	SearchMaxRounds  int
+	// Models is the provider's model catalog: upstream model name -> metadata.
+	Models map[string]ModelMeta
+}
+
+// ModelMeta holds metadata for a model offered by a provider.
+type ModelMeta struct {
+	ContextWindow   int
+	MaxOutputTokens int
+	InputPrice      float64
+	OutputPrice     float64
+	CacheWritePrice float64
+	CacheReadPrice  float64
 }
 
 type ResponseProxyConfig struct {
@@ -97,17 +121,6 @@ type CacheConfig struct {
 	MinBreakpointTokens      int `yaml:"min_breakpoint_tokens"`
 }
 
-type ProviderModelConfig struct {
-	Name            string
-	Provider        string // provider key (empty = "default")
-	ContextWindow   int
-	MaxOutputTokens int
-	InputPrice      float64
-	OutputPrice     float64
-	CacheWritePrice float64
-	CacheReadPrice  float64
-}
-
 func (cfg Config) Validate() error {
 	if err := cfg.Cache.Validate(); err != nil {
 		return err
@@ -128,37 +141,32 @@ func (cfg Config) validateTransform() error {
 	if err := cfg.validateSearchConfig(); err != nil {
 		return err
 	}
-	// Multi-provider mode: ProviderDefs is non-empty.
 	if len(cfg.ProviderDefs) > 0 {
-		if len(cfg.ProviderModels) == 0 {
-			return errors.New("provider.providers.<key>.models must contain at least one model mapping")
+		if len(cfg.Routes) == 0 {
+			return errors.New("routes must contain at least one model mapping")
 		}
 		for key, def := range cfg.ProviderDefs {
 			if key == "" {
-				return errors.New("provider.providers cannot contain empty provider keys")
+				return errors.New("providers cannot contain empty provider keys")
 			}
 			if def.BaseURL == "" {
-				return fmt.Errorf("provider.providers.%s.base_url is required", key)
+				return fmt.Errorf("providers.%s.base_url is required", key)
 			}
 			if def.APIKey == "" {
-				return fmt.Errorf("provider.providers.%s.api_key is required", key)
+				return fmt.Errorf("providers.%s.api_key is required", key)
 			}
 			switch def.Protocol {
 			case "", "anthropic", "openai":
 			default:
-				return fmt.Errorf("provider.providers.%s.protocol must be \"anthropic\" or \"openai\"", key)
+				return fmt.Errorf("providers.%s.protocol must be \"anthropic\" or \"openai\"", key)
 			}
 		}
-		for alias, model := range cfg.ProviderModels {
-			if alias == "" || model.Name == "" {
-				return errors.New("provider.providers.<key>.models cannot contain empty aliases or models")
+		for alias, route := range cfg.Routes {
+			if alias == "" || route.Model == "" {
+				return errors.New("routes cannot contain empty aliases or models")
 			}
-			providerKey := model.Provider
-			if providerKey == "" {
-				providerKey = "default"
-			}
-			if _, ok := cfg.ProviderDefs[providerKey]; !ok {
-				return fmt.Errorf("provider.providers.<key>.models.%s references unknown provider %q", alias, providerKey)
+			if _, ok := cfg.ProviderDefs[route.Provider]; !ok {
+				return fmt.Errorf("routes.%s references unknown provider %q", alias, route.Provider)
 			}
 		}
 		return nil
@@ -170,12 +178,12 @@ func (cfg Config) validateTransform() error {
 	if cfg.ProviderAPIKey == "" {
 		return errors.New("provider.api_key is required")
 	}
-	if len(cfg.ModelMap) == 0 {
-		return errors.New("provider.providers.<key>.models must contain at least one model mapping")
+	if len(cfg.Routes) == 0 {
+		return errors.New("routes must contain at least one model mapping")
 	}
-	for alias, model := range cfg.ModelMap {
-		if alias == "" || model == "" {
-			return errors.New("provider.providers.<key>.models cannot contain empty aliases or models")
+	for alias, route := range cfg.Routes {
+		if alias == "" || route.Model == "" {
+			return errors.New("routes cannot contain empty aliases or models")
 		}
 	}
 	return nil
@@ -190,7 +198,6 @@ func (cfg Config) validateSearchConfig() error {
 			return errors.New("provider.search_max_rounds must be > 0 when web_search.support is 'injected'")
 		}
 	}
-	// Validate per-provider injected configs.
 	for key, def := range cfg.ProviderDefs {
 		if def.WebSearchSupport == WebSearchSupportInjected {
 			tavilyKey := def.TavilyAPIKey
@@ -198,14 +205,14 @@ func (cfg Config) validateSearchConfig() error {
 				tavilyKey = cfg.TavilyAPIKey
 			}
 			if tavilyKey == "" {
-				return fmt.Errorf("provider.providers.%s.web_search.tavily_api_key is required when web_search.support is 'injected'", key)
+				return fmt.Errorf("providers.%s.web_search.tavily_api_key is required when web_search.support is 'injected'", key)
 			}
 			maxRounds := def.SearchMaxRounds
 			if maxRounds <= 0 {
 				maxRounds = cfg.SearchMaxRounds
 			}
 			if maxRounds <= 0 {
-				return fmt.Errorf("provider.providers.%s.web_search.search_max_rounds must be > 0 when web_search.support is 'injected'", key)
+				return fmt.Errorf("providers.%s.web_search.search_max_rounds must be > 0 when web_search.support is 'injected'", key)
 			}
 		}
 	}
@@ -232,32 +239,34 @@ func (cfg AnthropicProxyConfig) Validate(prefix string) error {
 	return nil
 }
 
+// ModelFor resolves a model alias to the upstream model name via Routes.
 func (cfg Config) ModelFor(model string) string {
-	if cfg.ModelMap == nil {
+	if cfg.Routes == nil {
 		return model
 	}
-	if mapped, ok := cfg.ModelMap[model]; ok && mapped != "" {
-		return mapped
+	if route, ok := cfg.Routes[model]; ok && route.Model != "" {
+		return route.Model
 	}
 	return model
 }
 
-func (cfg Config) ProviderModelFor(model string) ProviderModelConfig {
-	if cfg.ProviderModels == nil {
-		return ProviderModelConfig{}
+// RouteFor returns the full RouteEntry for a model alias.
+func (cfg Config) RouteFor(model string) RouteEntry {
+	if cfg.Routes == nil {
+		return RouteEntry{}
 	}
-	return cfg.ProviderModels[model]
+	return cfg.Routes[model]
 }
 
 func (cfg Config) DefaultModelAlias() string {
 	if cfg.DefaultModel != "" {
 		return cfg.DefaultModel
 	}
-	if _, ok := cfg.ProviderModels["moonbridge"]; ok {
+	if _, ok := cfg.Routes["moonbridge"]; ok {
 		return "moonbridge"
 	}
-	if len(cfg.ProviderModels) == 1 {
-		for alias := range cfg.ProviderModels {
+	if len(cfg.Routes) == 1 {
+		for alias := range cfg.Routes {
 			return alias
 		}
 	}
@@ -299,7 +308,6 @@ func (cfg *Config) OverrideAddr(addr string) {
 }
 
 // WebSearchForProvider returns the resolved web search support for a given provider key.
-// It checks the provider-level override first, then falls back to the global setting.
 func (cfg Config) WebSearchForProvider(providerKey string) WebSearchSupport {
 	if def, ok := cfg.ProviderDefs[providerKey]; ok && def.WebSearchSupport != "" {
 		return def.WebSearchSupport
@@ -309,10 +317,9 @@ func (cfg Config) WebSearchForProvider(providerKey string) WebSearchSupport {
 
 // WebSearchForModel returns the resolved web search support for a given model alias.
 func (cfg Config) WebSearchForModel(modelAlias string) WebSearchSupport {
-	if pm, ok := cfg.ProviderModels[modelAlias]; ok && pm.Provider != "" {
-		return cfg.WebSearchForProvider(pm.Provider)
+	if route, ok := cfg.Routes[modelAlias]; ok && route.Provider != "" {
+		return cfg.WebSearchForProvider(route.Provider)
 	}
-	// No explicit provider; try "default" key, then fall back to global.
 	if _, ok := cfg.ProviderDefs["default"]; ok {
 		return cfg.WebSearchForProvider("default")
 	}
@@ -392,17 +399,15 @@ func boolOrDefault(value *bool, fallback bool) bool {
 	return *value
 }
 
-func providerModelMap(models map[string]ProviderModelConfig) map[string]string {
-	if len(models) == 0 {
-		return nil
-	}
-	normalized := make(map[string]string, len(models))
-	for alias, model := range models {
-		normalized[strings.TrimSpace(alias)] = strings.TrimSpace(model.Name)
-	}
-	return normalized
-}
-
 func (cfg Config) DeepSeekV4Enabled() bool {
 	return cfg.DeepSeekV4
+}
+
+// ProviderFor returns the provider key that serves the given model alias.
+// Returns empty string when no explicit mapping exists.
+func (cfg Config) ProviderFor(modelAlias string) string {
+	if route, ok := cfg.Routes[modelAlias]; ok {
+		return route.Provider
+	}
+	return ""
 }

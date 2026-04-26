@@ -69,15 +69,15 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 	resolvePerProviderWebSearch(ctx, cfg, providerMgr, errors)
 
 	sessionStats := stats.NewSessionStats()
-	// Set per-model pricing if configured
+	// Set per-model pricing from routes
 	pricing := make(map[string]stats.ModelPricing)
-	for alias, pm := range cfg.ProviderModels {
-		if pm.InputPrice > 0 || pm.OutputPrice > 0 || pm.CacheWritePrice > 0 || pm.CacheReadPrice > 0 {
+	for alias, route := range cfg.Routes {
+		if route.InputPrice > 0 || route.OutputPrice > 0 || route.CacheWritePrice > 0 || route.CacheReadPrice > 0 {
 			pricing[alias] = stats.ModelPricing{
-				InputPrice:      pm.InputPrice,
-				OutputPrice:     pm.OutputPrice,
-				CacheWritePrice: pm.CacheWritePrice,
-				CacheReadPrice:  pm.CacheReadPrice,
+				InputPrice:      route.InputPrice,
+				OutputPrice:     route.OutputPrice,
+				CacheWritePrice: route.CacheWritePrice,
+				CacheReadPrice:  route.CacheReadPrice,
 			}
 		}
 	}
@@ -153,15 +153,11 @@ func buildProviderDefsFromConfig(cfg config.Config) map[string]provider.Provider
 
 // buildModelRoutesFromConfig converts config model entries into route definitions.
 func buildModelRoutesFromConfig(cfg config.Config) map[string]provider.ModelRoute {
-	routes := make(map[string]provider.ModelRoute, len(cfg.ProviderModels))
-	for alias, pm := range cfg.ProviderModels {
-		providerKey := pm.Provider
-		if providerKey == "" {
-			providerKey = "default"
-		}
+	routes := make(map[string]provider.ModelRoute, len(cfg.Routes))
+	for alias, route := range cfg.Routes {
 		routes[alias] = provider.ModelRoute{
-			Provider: providerKey,
-			Name:     pm.Name,
+			Provider: route.Provider,
+			Name:     route.Model,
 		}
 	}
 	return routes

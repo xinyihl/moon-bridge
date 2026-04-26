@@ -215,18 +215,18 @@ func loadE2EConfig(t *testing.T) e2eConfig {
 		t.Fatalf("load e2e config %s error = %v", configPath, err)
 	}
 
-	modelAlias, err := e2eModelAlias(cfg.ModelMap)
+	modelAlias, err := e2eModelAlias(cfg.Routes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return e2eConfig{Config: cfg, ModelAlias: modelAlias}
 }
 
-func e2eModelAlias(models map[string]string) (string, error) {
-	if mapped := strings.TrimSpace(models["e2e-model"]); mapped != "" {
+func e2eModelAlias(routes map[string]config.RouteEntry) (string, error) {
+	if route, ok := routes["e2e-model"]; ok && route.Model != "" {
 		return "e2e-model", nil
 	}
-	if mapped := strings.TrimSpace(models["moonbridge"]); mapped != "" {
+	if route, ok := routes["moonbridge"]; ok && route.Model != "" {
 		return "moonbridge", nil
 	}
 

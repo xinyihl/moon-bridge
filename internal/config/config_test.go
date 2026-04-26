@@ -20,12 +20,13 @@ provider:
       web_search:
         support: auto
       models:
-        gpt-test:
-          name: claude-test
+        claude-test:
           context_window: 200000
           max_output_tokens: 100000
-        gpt-fast:
-          name: claude-fast
+        claude-fast: {}
+  routes:
+    gpt-test: "main/claude-test"
+    gpt-fast: "main/claude-fast"
   web_search:
     support: auto
     max_uses: 12
@@ -76,9 +77,9 @@ trace_requests: true
 	if !cfg.TraceRequests {
 		t.Fatal("TraceRequests = false, want true")
 	}
-	providerModel := cfg.ProviderModelFor("gpt-test")
-	if providerModel.Name != "claude-test" || providerModel.ContextWindow != 200000 || providerModel.MaxOutputTokens != 100000 {
-		t.Fatalf("ProviderModelFor(gpt-test) = %+v", providerModel)
+	route := cfg.RouteFor("gpt-test")
+	if route.Model != "claude-test" || route.ContextWindow != 200000 || route.MaxOutputTokens != 100000 {
+		t.Fatalf("RouteFor(gpt-test) = %+v", route)
 	}
 }
 
@@ -91,8 +92,9 @@ provider:
       base_url: https://provider.example.test
       api_key: upstream-key
       models:
-        moonbridge:
-          name: claude-test
+        claude-test: {}
+  routes:
+    moonbridge: "main/claude-test"
   web_search:
     support: disabled
 `))
@@ -116,15 +118,16 @@ provider:
       base_url: https://deepseek.example.test
       api_key: deepseek-key
       models:
-        moonbridge:
-          name: deepseek-v4-pro
+        deepseek-v4-pro: {}
     openai:
       base_url: https://openai.example.test
       api_key: openai-key
       protocol: openai
       models:
-        image:
-          name: gpt-image-1.5
+        gpt-image-1.5: {}
+  routes:
+    moonbridge: "deepseek/deepseek-v4-pro"
+    image: "openai/gpt-image-1.5"
 `))
 	if err != nil {
 		t.Fatalf("LoadFromYAML() error = %v", err)
@@ -147,8 +150,9 @@ provider:
       api_key: openai-key
       protocol: openai
       models:
-        image:
-          name: gpt-image-1.5
+        gpt-image-1.5: {}
+  routes:
+    image: "openai/gpt-image-1.5"
 `,
 		"invalid protocol": `
 mode: Transform
@@ -159,10 +163,11 @@ provider:
       api_key: openai-key
       protocol: responses
       models:
-        image:
-          name: gpt-image-1.5
+        gpt-image-1.5: {}
+  routes:
+    image: "openai/gpt-image-1.5"
 `,
-		"empty model": `
+		"empty route model": `
 mode: Transform
 provider:
   providers:
@@ -170,9 +175,8 @@ provider:
       base_url: https://openai.example.test
       api_key: openai-key
       protocol: openai
-      models:
-        image:
-          name: ""
+  routes:
+    image: "openai/"
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -192,8 +196,9 @@ provider:
       base_url: https://provider.example.test
       api_key: upstream-key
       models:
-        moonbridge:
-          name: claude-test
+        claude-test: {}
+  routes:
+    moonbridge: "main/claude-test"
   web_search:
     support: sometimes
 `))
@@ -232,8 +237,9 @@ provider:
       base_url: https://provider.example.test
       api_key: upstream-key
       models:
-        gpt-test:
-          name: claude-test
+        claude-test: {}
+  routes:
+    gpt-test: "main/claude-test"
 cache:
   ttl: 24h
 `))
@@ -242,7 +248,7 @@ cache:
 	}
 }
 
-func TestLoadFromYAMLRejectsEmptyModelMapping(t *testing.T) {
+func TestLoadFromYAMLRejectsEmptyRouteModel(t *testing.T) {
 	_, err := config.LoadFromYAML([]byte(`
 mode: Transform
 provider:
@@ -250,12 +256,11 @@ provider:
     main:
       base_url: https://provider.example.test
       api_key: upstream-key
-      models:
-        moonbridge:
-          name: ""
+  routes:
+    moonbridge: "main/"
 `))
 	if err == nil {
-		t.Fatal("LoadFromYAML() error = nil, want empty model mapping error")
+		t.Fatal("LoadFromYAML() error = nil, want empty route model error")
 	}
 }
 
@@ -272,8 +277,9 @@ provider:
       base_url: https://provider.example.test
       api_key: upstream-key
       models:
-        moonbridge:
-          name: claude-test
+        claude-test: {}
+  routes:
+    moonbridge: "main/claude-test"
 cache:
   mode: off
 `), 0o600); err != nil {
@@ -356,9 +362,9 @@ developer:
 }
 
 func TestDefaultModelAliasFallsBackToMoonbridge(t *testing.T) {
-	cfg := config.Config{ProviderModels: map[string]config.ProviderModelConfig{
-		"moonbridge": {Name: "claude-test"},
-		"other":      {Name: "claude-other"},
+	cfg := config.Config{Routes: map[string]config.RouteEntry{
+		"moonbridge": {Provider: "default", Model: "claude-test"},
+		"other":      {Provider: "default", Model: "claude-other"},
 	}}
 	if got := cfg.DefaultModelAlias(); got != "moonbridge" {
 		t.Fatalf("DefaultModelAlias() = %q", got)
@@ -442,8 +448,9 @@ provider:
       base_url: https://provider.example.test
       api_key: "${MOONBRIDGE_TEST_API_KEY}"
       models:
-        moonbridge:
-          name: claude-test
+        claude-test: {}
+  routes:
+    moonbridge: "main/claude-test"
 `), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}

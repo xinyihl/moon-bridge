@@ -196,29 +196,6 @@ func BuildProviderConfigs(
 	return map[string]ProviderConfig{"default": cfg}
 }
 
-// BuildModelRoutes converts the old ProviderModels map (alias -> ProviderModelConfig)
-// and an optional provider key into ModelRoute entries. If ProviderModelConfig has
-// no provider field, it defaults to "default".
-func BuildModelRoutes(models map[string]struct {
-	Name     string
-	Provider string
-}) map[string]ModelRoute {
-	if len(models) == 0 {
-		return nil
-	}
-	routes := make(map[string]ModelRoute, len(models))
-	for alias, m := range models {
-		providerKey := m.Provider
-		if providerKey == "" {
-			providerKey = "default"
-		}
-		routes[strings.TrimSpace(alias)] = ModelRoute{
-			Provider: strings.TrimSpace(providerKey),
-			Name:     strings.TrimSpace(m.Name),
-		}
-	}
-	return routes
-}
 
 func valueOrDefault(value, fallback string) string {
 	if value == "" {

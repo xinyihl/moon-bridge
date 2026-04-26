@@ -52,7 +52,7 @@ internal/e2e           真实提供商端到端测试
 
 基于 YAML，详见 [config.example.yml](../config.example.yml)。默认从 `config.yml` 加载配置文件，可通过 `MOONBRIDGE_CONFIG` 环境变量覆盖。敏感凭证和本地覆盖项放入被 `.gitignore` 忽略的 `config.yml`；示例文件始终纳入版本控制。
 
-模型定义在各 Provider 下的 `models` 字段中，所属 Provider 由父级 key 隐式决定：
+Provider 在 `models` 中声明可用的上游模型及元信息，`routes` 把客户端别名映射到 `"provider/upstream_model"`：
 
 ```yaml
 provider:
@@ -62,8 +62,7 @@ provider:
       api_key: "${DEEPSEEK_API_KEY}"
       version: "2023-06-01"
       models:
-        moonbridge:
-          name: "deepseek-v4-pro"
+        deepseek-v4-pro:
           context_window: 1000000
           max_output_tokens: 384000
           pricing:
@@ -74,8 +73,11 @@ provider:
       api_key: "${OPENAI_API_KEY}"
       protocol: "openai"
       models:
-        gpt-image:
-          name: "gpt-image-1.5"
+        gpt-image-1.5: {}
+
+  routes:
+    moonbridge: "deepseek/deepseek-v4-pro"
+    gpt-image: "openai/gpt-image-1.5"
 ```
 
 `protocol` 默认为 `anthropic`。设置为 `openai` 时，Transform 不进入 Anthropic 转换层，只改写请求中的 `model` 并代理到上游 Responses 端点。

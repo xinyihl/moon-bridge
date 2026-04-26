@@ -10,7 +10,7 @@ Moon Bridge 是一个 OpenAI Responses 兼容转发层。你可以像调用 Open
 cp config.example.yml config.yml
 ```
 
-2. 编辑 `config.yml`，填入 `provider.providers` 下各上游 Provider 的 `base_url` 和 `api_key`，并在各 Provider 的 `models` 中配置模型别名到上游模型的映射。
+2. 编辑 `config.yml`，填入 `provider.providers` 下各上游 Provider 的 `base_url` 和 `api_key`，在各 Provider 的 `models` 中声明可用的上游模型，然后在 `provider.routes` 中配置别名到 `"provider/upstream_model"` 的转发表。
 
 3. 启动服务：
 
@@ -40,7 +40,7 @@ go run ./cmd/moonbridge
 
 ### Provider 与模型路由
 
-模型定义在各 Provider 下的 `models` 字段中，客户端使用模型别名请求。例如客户端请求 `model: "moonbridge"` 时，会发往 `deepseek` Provider 的 `deepseek-v4-pro`；请求 `model: "gpt-image"` 时，会按 OpenAI Responses 协议直接发往 `openai` Provider 的 `gpt-image-1.5`：
+Provider 在 `models` 中声明自己提供的上游模型及元信息（context_window、pricing 等），`routes` 则是一张独立的转发表，把客户端使用的模型别名映射到 `"provider/upstream_model"`。例如客户端请求 `model: "moonbridge"` 时，会发往 `deepseek` Provider 的 `deepseek-v4-pro`；请求 `model: "gpt-image"` 时，会按 OpenAI Responses 协议直接发往 `openai` Provider 的 `gpt-image-1.5`：
 
 ```yaml
 provider:
@@ -50,8 +50,7 @@ provider:
       api_key: "${DEEPSEEK_API_KEY}"
       version: "2023-06-01"
       models:
-        moonbridge:
-          name: "deepseek-v4-pro"
+        deepseek-v4-pro:
           context_window: 200000
           max_output_tokens: 100000
     openai:
@@ -59,9 +58,11 @@ provider:
       api_key: "${OPENAI_API_KEY}"
       protocol: "openai"
       models:
-        gpt-image:
-          name: "gpt-image-1.5"
+        gpt-image-1.5: {}
 
+  routes:
+    moonbridge: "deepseek/deepseek-v4-pro"
+    gpt-image: "openai/gpt-image-1.5"
   default_model: "moonbridge"
 ```
 
@@ -69,7 +70,7 @@ provider:
 
 ### 模型定价
 
-`provider.providers.<key>.models.<alias>.pricing` 是可选的 per-model 价格配置，单位是元（¥）/ M tokens。当某个模型配置了价格后，Moon Bridge 会按 session 累加费用，并在每次请求和服务退出时输出费用统计。
+`provider.providers.<key>.models.<upstream>.pricing` 是可选的 per-model 价格配置，单位是元（¥）/ M tokens。当某个模型配置了价格后，Moon Bridge 会按 session 累加费用，并在每次请求和服务退出时输出费用统计。价格定义在 Provider 的模型目录中，通过 `routes` 关联到别名后自动生效。
 
 ```yaml
 provider:
@@ -77,8 +78,7 @@ provider:
     deepseek:
       # ...
       models:
-        moonbridge:
-          name: "deepseek-v4-pro"
+        deepseek-v4-pro:
           pricing:
             input_price: 2        # 无缓存输入 元/M tokens
             output_price: 8       # 模型输出

@@ -81,7 +81,7 @@ func TestResponsesHandlerReturnsOpenAIResponse(t *testing.T) {
 	handler := server.New(server.Config{
 		Bridge: bridge.New(config.Config{
 			DefaultMaxTokens: 1024,
-			ModelMap:         map[string]string{"gpt-test": "claude-test"},
+			Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "claude-test"}},
 			Cache:            config.CacheConfig{Mode: "off"},
 		}, cache.NewMemoryRegistry()),
 		Provider: provider,
@@ -118,7 +118,7 @@ func TestResponsesHandlerWritesTraceFile(t *testing.T) {
 	handler := server.New(server.Config{
 		Bridge: bridge.New(config.Config{
 			DefaultMaxTokens: 1024,
-			ModelMap:         map[string]string{"gpt-test": "claude-test"},
+			Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "claude-test"}},
 			Cache:            config.CacheConfig{Mode: "off"},
 		}, cache.NewMemoryRegistry()),
 		Provider: provider,
@@ -188,7 +188,7 @@ func TestResponsesHandlerAcceptsCodexResponsesPath(t *testing.T) {
 	handler := server.New(server.Config{
 		Bridge: bridge.New(config.Config{
 			DefaultMaxTokens: 1024,
-			ModelMap:         map[string]string{"gpt-test": "claude-test"},
+			Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "claude-test"}},
 			Cache:            config.CacheConfig{Mode: "off"},
 		}, cache.NewMemoryRegistry()),
 		Provider: provider,
@@ -283,7 +283,7 @@ func TestResponsesHandlerReusesCodexSessionForDeepSeekThinking(t *testing.T) {
 		Bridge: bridge.New(config.Config{
 			DeepSeekV4:       true,
 			DefaultMaxTokens: 1024,
-			ModelMap:         map[string]string{"gpt-test": "deepseek-v4-pro"},
+			Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
 			Cache:            config.CacheConfig{Mode: "off"},
 		}, cache.NewMemoryRegistry()),
 		Provider: provider,
@@ -386,8 +386,8 @@ func TestResponsesHandlerPassesOpenAIProtocolThroughWithUpstreamModel(t *testing
 	sessionStats.Record("image", stats.Usage{InputTokens: 1_000_000})
 	handler := server.New(server.Config{
 		Bridge: bridge.New(config.Config{
-			ProviderModels: map[string]config.ProviderModelConfig{
-				"image": {Provider: "openai", Name: "gpt-image-1.5"},
+			Routes: map[string]config.RouteEntry{
+				"image": {Provider: "openai", Model: "gpt-image-1.5"},
 			},
 			Cache: config.CacheConfig{Mode: "off"},
 		}, cache.NewMemoryRegistry()),
