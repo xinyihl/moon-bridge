@@ -149,9 +149,24 @@ func New(cfg config.Config, registry *cache.MemoryRegistry) *Bridge {
 	return &Bridge{cfg: cfg, registry: registry}
 }
 
+// RequestOptions carries per-request overrides resolved by the server layer.
+type RequestOptions struct {
+	// WebSearchMode is the resolved web search support for this request's provider.
+	// One of "enabled", "disabled", "injected", or empty (falls back to global config).
+	WebSearchMode string
+	// WebSearchMaxUses overrides the max uses for web_search tool.
+	WebSearchMaxUses int
+	// FirecrawlAPIKey overrides the Firecrawl API key for injected search.
+	FirecrawlAPIKey string
+}
+
 // ToAnthropic converts an OpenAI Responses request to an Anthropic MessageRequest.
 // Takes an optional session for per-request state (DeepSeek thinking cache).
-func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session.Session) (anthropic.MessageRequest, cache.CacheCreationPlan, error) {
+func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session.Session, opts ...RequestOptions) (anthropic.MessageRequest, cache.CacheCreationPlan, error) {
+	var opt RequestOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	log := logger.L().With("model", request.Model)
 	log.Debug("converting OpenAI request to Anthropic")
 	if request.Model == "" {
@@ -174,7 +189,7 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session
 		messages = []anthropic.Message{{Role: "user", Content: []anthropic.ContentBlock{{Type: "text", Text: " "}}}}
 	}
 
-	tools, err := bridge.convertTools(request.Tools)
+	tools, err := bridge.convertTools(request.Tools, opt)
 	if err != nil {
 		return anthropic.MessageRequest{}, cache.CacheCreationPlan{}, err
 	}
@@ -381,11 +396,16 @@ func (bridge *Bridge) ErrorResponse(err error) (int, openai.ErrorResponse) {
 }
 
 // ProviderFor returns the provider key that serves the given model alias.
+// Returns empty string when no explicit mapping exists.
 func (bridge *Bridge) ProviderFor(modelAlias string) string {
 	if bridge.cfg.ProviderModels != nil {
-		if pm, ok := bridge.cfg.ProviderModels[modelAlias]; ok && pm.Provider != "" {
-			return pm.Provider
+		if pm, ok := bridge.cfg.ProviderModels[modelAlias]; ok {
+			if pm.Provider != "" {
+				return pm.Provider
+			}
+			// Model exists but no explicit provider key; let caller resolve default.
+			return ""
 		}
 	}
-	return "default"
+	return ""
 }

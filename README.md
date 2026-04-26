@@ -99,12 +99,38 @@ provider:
 
 ### Web Search 能力
 
-`provider.web_search.support` 控制是否向 Anthropic 上游注入搜索工具：
+Web search 支持按 provider 独立配置。在 `provider.providers.<key>.web_search.support` 中为每个 provider 单独设置；全局 `provider.web_search.support` 作为未在 provider 级别配置时的回退默认值。
+
+可选值：
 
 - `auto`：启动 Transform 时用默认模型发送一次流式轻量探测；只有探测证明可用才注入，否则保守禁用
-- `enabled`：跳过探测，始终注入 Anthropic `web_search_20250305`
-- `disabled`：不注入搜索工具，Codex 仍可继续使用其他工具
-- `injected`：不依赖上游 Provider 是否支持 Anthropic 服务端搜索。桥接器改为向模型注入 `tavily_search` / `firecrawl_fetch` 两个 function-type 工具，并在 Transform 内部通过 Tavily / Firecrawl API 执行搜索。需配置 `tavily_api_key`；`firecrawl_api_key` 可选，不配则不注入 fetch 工具
+- `enabled`：跳过探测，始终注入 Anthropic `web_search_20250305`（适合已知支持的 Anthropic provider）
+- `disabled`：不注入搜索工具（适合 DeepSeek 等不支持 Anthropic server tool 的 provider）
+- `injected`：不依赖上游 Provider 是否支持 Anthropic 服务端搜索，改为注入 `tavily_search` / `firecrawl_fetch` 工具并在 Transform 内部执行搜索。需配置 `tavily_api_key`；`firecrawl_api_key` 可选
+
+非 Anthropic 协议的 provider（`protocol: "openai"`）会自动禁用 web search，无需手动配置。
+
+配置示例：
+
+```yaml
+provider:
+  providers:
+    anthropic:
+      base_url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      web_search:
+        support: "enabled"  # Anthropic 原生支持
+    deepseek:
+      base_url: "https://api.deepseek.com"
+      api_key: "${DEEPSEEK_API_KEY}"
+      web_search:
+        support: "disabled" # DeepSeek 不支持 Anthropic server tool
+
+  # 全局回退默认值（未在 provider 级别配置时使用）
+  web_search:
+    support: "auto"
+    max_uses: 8
+```
 
 ### DeepSeek V4 扩展
 
@@ -210,8 +236,8 @@ Moon Bridge 支持以下工具类型：
 
 - **函数工具**（`type: "function"`）：标准 JSON Schema 参数定义，Anthropic 返回的工具调用会映射为 OpenAI 的 `function_call`。
 - **`local_shell`**：Codex CLI 的本地 shell 工具，自动映射为 Anthropic 兼容格式，shell 执行仍由 Codex 客户端完成。
-- **`web_search`**：Codex 的搜索工具，按 Provider 能力注入 Anthropic `web_search_20250305`，搜索次数上限由 `provider.web_search.max_uses` 控制。
-- **Custom grammar 工具**：Codex 内置需要 freeform grammar 的工具目前主要是 `apply_patch` 和 Code Mode `exec`。Moon Bridge 会把 `apply_patch` 拆成 add/delete/update/replace/batch 一组结构化工具，把 `exec` 暴露成 `source`；Provider 返回后再拼回 Codex 需要的 raw grammar call。
+- **`web_search`**：Codex 的搜索工具，按当前请求路由到的 provider 的 web search 配置决定是注入 Anthropic `web_search_20250305`、注入 injected 工具还是跳过。搜索次数上限由 `web_search.max_uses` 控制（支持 per-provider 覆盖）。
+- **Custom grammar 工具**：Codex 内置需要 freeform grammar 的工具目前主要是 `apply_patch` 和 Code Mode `exec`。Moon Bridge 把 `apply_patch` 拆成 add/delete/update/replace/batch 一组结构化工具，把 `exec` 暴露成 `source`；Provider 返回后再拼回 Codex 需要的 raw grammar call。
 - **命名空间 / MCP 工具**：支持带命名前缀的工具名称。
 
 ## 响应与用量

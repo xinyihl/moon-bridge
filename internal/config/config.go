@@ -63,6 +63,11 @@ type ProviderDef struct {
 	Version   string
 	UserAgent string
 	Protocol  string // "anthropic" (default) or "openai"
+	WebSearchSupport  WebSearchSupport
+	WebSearchMaxUses  int
+	TavilyAPIKey      string
+	FirecrawlAPIKey   string
+	SearchMaxRounds   int
 }
 
 type ResponseProxyConfig struct {
@@ -184,6 +189,25 @@ func (cfg Config) validateSearchConfig() error {
 			return errors.New("provider.search_max_rounds must be > 0 when web_search.support is 'injected'")
 		}
 	}
+	// Validate per-provider injected configs.
+	for key, def := range cfg.ProviderDefs {
+		if def.WebSearchSupport == WebSearchSupportInjected {
+			tavilyKey := def.TavilyAPIKey
+			if tavilyKey == "" {
+				tavilyKey = cfg.TavilyAPIKey
+			}
+			if tavilyKey == "" {
+				return fmt.Errorf("provider.providers.%s.web_search.tavily_api_key is required when web_search.support is 'injected'", key)
+			}
+			maxRounds := def.SearchMaxRounds
+			if maxRounds <= 0 {
+				maxRounds = cfg.SearchMaxRounds
+			}
+			if maxRounds <= 0 {
+				return fmt.Errorf("provider.providers.%s.web_search.search_max_rounds must be > 0 when web_search.support is 'injected'", key)
+			}
+		}
+	}
 	return nil
 }
 
@@ -271,6 +295,65 @@ func (cfg *Config) OverrideAddr(addr string) {
 		return
 	}
 	cfg.Addr = strings.TrimSpace(addr)
+}
+
+// WebSearchForProvider returns the resolved web search support for a given provider key.
+// It checks the provider-level override first, then falls back to the global setting.
+func (cfg Config) WebSearchForProvider(providerKey string) WebSearchSupport {
+	if def, ok := cfg.ProviderDefs[providerKey]; ok && def.WebSearchSupport != "" {
+		return def.WebSearchSupport
+	}
+	return cfg.WebSearchSupport
+}
+
+// WebSearchForModel returns the resolved web search support for a given model alias.
+func (cfg Config) WebSearchForModel(modelAlias string) WebSearchSupport {
+	if pm, ok := cfg.ProviderModels[modelAlias]; ok && pm.Provider != "" {
+		return cfg.WebSearchForProvider(pm.Provider)
+	}
+	// No explicit provider; try "default" key, then fall back to global.
+	if _, ok := cfg.ProviderDefs["default"]; ok {
+		return cfg.WebSearchForProvider("default")
+	}
+	return cfg.WebSearchSupport
+}
+
+// WebSearchMaxUsesForProvider returns the max uses for a given provider key.
+func (cfg Config) WebSearchMaxUsesForProvider(providerKey string) int {
+	if def, ok := cfg.ProviderDefs[providerKey]; ok && def.WebSearchMaxUses > 0 {
+		return def.WebSearchMaxUses
+	}
+	if cfg.WebSearchMaxUses > 0 {
+		return cfg.WebSearchMaxUses
+	}
+	return 8
+}
+
+// WebSearchTavilyKeyForProvider returns the Tavily API key for a given provider key.
+func (cfg Config) WebSearchTavilyKeyForProvider(providerKey string) string {
+	if def, ok := cfg.ProviderDefs[providerKey]; ok && def.TavilyAPIKey != "" {
+		return def.TavilyAPIKey
+	}
+	return cfg.TavilyAPIKey
+}
+
+// WebSearchFirecrawlKeyForProvider returns the Firecrawl API key for a given provider key.
+func (cfg Config) WebSearchFirecrawlKeyForProvider(providerKey string) string {
+	if def, ok := cfg.ProviderDefs[providerKey]; ok && def.FirecrawlAPIKey != "" {
+		return def.FirecrawlAPIKey
+	}
+	return cfg.FirecrawlAPIKey
+}
+
+// WebSearchMaxRoundsForProvider returns the search max rounds for a given provider key.
+func (cfg Config) WebSearchMaxRoundsForProvider(providerKey string) int {
+	if def, ok := cfg.ProviderDefs[providerKey]; ok && def.SearchMaxRounds > 0 {
+		return def.SearchMaxRounds
+	}
+	if cfg.SearchMaxRounds > 0 {
+		return cfg.SearchMaxRounds
+	}
+	return 5
 }
 
 func (cfg CacheConfig) Validate() error {

@@ -132,7 +132,7 @@ go test ./internal/e2e/ -v -count=1
 
 ## 当前实测结论
 
-缓存配置组合 `mode: automatic` + `prompt_caching: true` + `automatic_prompt_cache: true` + `explicit_cache_breakpoints: true` 在部分 Anthropic-compatible Provider / Codex 请求形态下，第 2 轮可达到较高缓存命中。该结论依赖具体 Provider、模型和请求形态；若后续 `cache_read_input_tokens` 长期为 0 或成本异常，应回退到 `mode: explicit` + `automatic_prompt_cache: false`，并查看 trace 中的 Provider 原始 usage。
+最新一批 Codex→Anthropic trace 显示：`hybrid`（`mode: automatic` + `automatic_prompt_cache: true` + `explicit_cache_breakpoints: true`）可以拿到较高 `cache_read_input_tokens`，但长会话工具循环里也会持续产生较高 `cache_creation_input_tokens`。为降低“每轮都从 tools/system 之后整段重建”的写入成本，planner 现在会把剩余断点预算均匀分布到更早的 user/tool_result 消息前缀，而不是只在最后一条消息落点。若后续 `cache_read_input_tokens` 长期为 0 或成本仍异常，应继续结合 trace 中的 Provider 原始 usage 调整 `mode`、`automatic_prompt_cache` 和 `max_breakpoints`。
 
 ## 依赖
 

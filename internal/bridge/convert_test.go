@@ -175,6 +175,41 @@ func TestToAnthropicCanDisableTopLevelAutomaticCache(t *testing.T) {
 	}
 }
 
+func TestToAnthropicSpreadsMessageBreakpointsAcrossLongHistory(t *testing.T) {
+	converted, plan, err := testBridge().ToAnthropic(openai.ResponsesRequest{
+		Model:        "gpt-test",
+		Instructions: "stable system prompt",
+		Tools: []openai.Tool{{
+			Type:       "function",
+			Name:       "lookup",
+			Parameters: map[string]any{"type": "object"},
+		}},
+		Input: json.RawMessage(`[
+			{"role":"user","content":[{"type":"input_text","text":"u1"}]},
+			{"role":"assistant","content":[{"type":"output_text","text":"a1"}]},
+			{"role":"user","content":[{"type":"input_text","text":"u2"}]},
+			{"role":"assistant","content":[{"type":"output_text","text":"a2"}]},
+			{"role":"user","content":[{"type":"input_text","text":"u3"}]}
+		]`),
+	}, nil)
+	if err != nil {
+		t.Fatalf("ToAnthropic() error = %v", err)
+	}
+
+	if len(plan.Breakpoints) != 4 {
+		t.Fatalf("breakpoints = %+v", plan.Breakpoints)
+	}
+	if converted.Tools[0].CacheControl == nil || converted.System[0].CacheControl == nil {
+		t.Fatalf("stable prefixes not cached: tools=%+v system=%+v", converted.Tools, converted.System)
+	}
+	if converted.Messages[0].Content[0].CacheControl != nil {
+		t.Fatalf("unexpected cache_control on oldest user message: %+v", converted.Messages[0])
+	}
+	if converted.Messages[2].Content[0].CacheControl == nil || converted.Messages[4].Content[0].CacheControl == nil {
+		t.Fatalf("message cache controls not spread across user history: %+v", converted.Messages)
+	}
+}
+
 func TestToAnthropicConvertsFunctionCallOutput(t *testing.T) {
 	request := openai.ResponsesRequest{
 		Model: "gpt-test",

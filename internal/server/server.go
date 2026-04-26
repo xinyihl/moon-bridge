@@ -13,6 +13,8 @@ import (
 
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/bridge"
+	"moonbridge/internal/config"
+	"moonbridge/internal/extensions/websearchinjected"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
 	"moonbridge/internal/provider"
@@ -35,6 +37,7 @@ type Config struct {
 	Tracer           *mbtrace.Tracer
 	TraceErrors      io.Writer
 	Stats            *stats.SessionStats
+	AppConfig        config.Config // full app config for per-provider resolution
 }
 
 type Server struct {
@@ -48,6 +51,7 @@ type Server struct {
 	mux         *http.ServeMux
 	sessionsMu  sync.Mutex
 	sessions    map[string]serverSession
+	appConfig   config.Config
 }
 
 type serverSession struct {
@@ -68,6 +72,7 @@ func New(cfg Config) *Server {
 		stats:       cfg.Stats,
 		mux:         http.NewServeMux(),
 		sessions:    map[string]serverSession{},
+		appConfig:   cfg.AppConfig,
 	}
 	server.mux.HandleFunc("/v1/responses", server.handleResponses)
 	server.mux.HandleFunc("/responses", server.handleResponses)
@@ -131,7 +136,10 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 		return
 	}
 
-	anthropicRequest, plan, err := server.bridge.ToAnthropic(responsesRequest, sess)
+	// Resolve per-provider web search mode.
+	reqOpts := server.resolveRequestOptions(responsesRequest.Model, providerKey)
+
+	anthropicRequest, plan, err := server.bridge.ToAnthropic(responsesRequest, sess, reqOpts)
 	conversionContext := server.bridge.ConversionContext(responsesRequest)
 	record.AnthropicRequest = anthropicRequest
 	if err != nil {
@@ -146,6 +154,15 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 
 	// Resolve the provider for this request.
 	effectiveProvider := server.resolveProvider(responsesRequest.Model, server.bridge.ProviderFor(responsesRequest.Model))
+	if effectiveProvider == nil {
+		log.Error("no provider available for model", "model", responsesRequest.Model)
+		writeOpenAIError(writer, http.StatusBadGateway, openai.ErrorResponse{Error: openai.ErrorObject{
+			Message: fmt.Sprintf("no upstream provider configured for model %q", responsesRequest.Model),
+			Type:    "server_error",
+			Code:    "provider_error",
+		}})
+		return
+	}
 
 	if responsesRequest.Stream {
 		log.Debug("handling streaming request", "model", responsesRequest.Model)
@@ -245,25 +262,6 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 // resolveProvider selects the correct Provider for a given model alias.
 // If a ProviderManager is configured, it uses it for routing.
 // Otherwise it falls back to the single default provider.
-func (server *Server) resolveProvider(modelAlias string, providerKey string) Provider {
-	if server.providerMgr != nil {
-		client, err := server.providerMgr.ClientForKey(providerKey)
-		if err == nil && client != nil {
-			return &anthropicClientWrapper{client: client}
-		}
-		// Fallback: try the first available client.
-		for _, k := range server.providerMgr.ProviderKeys() {
-			c, err := server.providerMgr.ClientForKey(k)
-			if err == nil && c != nil {
-				return &anthropicClientWrapper{client: c}
-			}
-		}
-	}
-	if server.provider != nil {
-		return server.provider
-	}
-	return nil
-}
 
 func (server *Server) sessionForRequest(request *http.Request) *session.Session {
 	key := sessionKeyFromRequest(request)
@@ -394,8 +392,13 @@ func (server *Server) handleOpenAIResponse(writer http.ResponseWriter, request *
 		return
 	}
 
-	baseURL := server.providerMgr.ProviderBaseURL(providerKey)
-	apiKey := server.providerMgr.ProviderAPIKey(providerKey)
+	// Resolve provider key from model alias when Bridge.ProviderFor returned empty.
+	resolvedKey := providerKey
+	if resolvedKey == "" {
+		resolvedKey = server.providerMgr.ProviderKeyForModel(responsesRequest.Model)
+	}
+	baseURL := server.providerMgr.ProviderBaseURL(resolvedKey)
+	apiKey := server.providerMgr.ProviderAPIKey(resolvedKey)
 	if baseURL == "" {
 		log.Error("openai provider has no base_url", "provider", providerKey)
 		writeOpenAIError(writer, http.StatusBadGateway, openai.ErrorResponse{Error: openai.ErrorObject{
@@ -568,4 +571,66 @@ func statsUsageFromOpenAIUsage(usage openai.Usage) (stats.Usage, bool) {
 		OutputTokens:         usage.OutputTokens,
 		CacheReadInputTokens: cacheRead,
 	}, true
+}
+func (server *Server) resolveProvider(modelAlias string, providerKey string) Provider {
+	if server.providerMgr != nil {
+		// First, try routing by model alias.
+		if _, client, err := server.providerMgr.ClientFor(modelAlias); err == nil && client != nil {
+			return server.maybeWrapInjectedSearch(client, modelAlias, providerKey)
+		}
+		// Fallback: try providerKey directly.
+		if providerKey != "" {
+			if client, err := server.providerMgr.ClientForKey(providerKey); err == nil && client != nil {
+				return server.maybeWrapInjectedSearch(client, modelAlias, providerKey)
+			}
+		}
+		// Last resort: try any available provider.
+		for _, k := range server.providerMgr.ProviderKeys() {
+			if c, err := server.providerMgr.ClientForKey(k); err == nil && c != nil {
+				return server.maybeWrapInjectedSearch(c, modelAlias, k)
+			}
+		}
+	}
+	if server.provider != nil {
+		return server.provider
+	}
+	return nil
+}
+
+// maybeWrapInjectedSearch wraps a client with the injected search orchestrator
+// if the resolved web search mode for this provider is "injected".
+func (server *Server) maybeWrapInjectedSearch(client *anthropic.Client, modelAlias string, providerKey string) Provider {
+	key := providerKey
+	if key == "" && server.providerMgr != nil {
+		key = server.providerMgr.ProviderKeyForModel(modelAlias)
+	}
+	if server.providerMgr != nil && server.providerMgr.ResolvedWebSearch(key) == "injected" {
+		tavilyKey := server.appConfig.WebSearchTavilyKeyForProvider(key)
+		firecrawlKey := server.appConfig.WebSearchFirecrawlKeyForProvider(key)
+		maxRounds := server.appConfig.WebSearchMaxRoundsForProvider(key)
+		logger.L().Debug("wrapping provider with injected search orchestrator", "provider", key)
+		return websearchinjected.WrapProvider(client, tavilyKey, firecrawlKey, maxRounds)
+	}
+	return &anthropicClientWrapper{client: client}
+}
+
+// resolveRequestOptions builds per-request bridge options based on the provider's
+// resolved web search support.
+func (server *Server) resolveRequestOptions(modelAlias string, providerKey string) bridge.RequestOptions {
+	if server.providerMgr == nil {
+		return bridge.RequestOptions{}
+	}
+	key := providerKey
+	if key == "" {
+		key = server.providerMgr.ProviderKeyForModel(modelAlias)
+	}
+	wsMode := server.providerMgr.ResolvedWebSearch(key)
+	if wsMode == "" {
+		return bridge.RequestOptions{}
+	}
+	return bridge.RequestOptions{
+		WebSearchMode:    wsMode,
+		WebSearchMaxUses: server.appConfig.WebSearchMaxUsesForProvider(key),
+		FirecrawlAPIKey:  server.appConfig.WebSearchFirecrawlKeyForProvider(key),
+	}
 }

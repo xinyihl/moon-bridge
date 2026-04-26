@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"moonbridge/internal/anthropic"
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
-	"moonbridge/internal/extensions/websearchinjected"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/provider"
 	"moonbridge/internal/proxy"
@@ -63,12 +63,10 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 		return fmt.Errorf("init provider manager: %w", err)
 	}
 
-	// Use the default provider client for web search probing and fallback.
-	defaultClient, err := providerMgr.ClientForKey(providerMgr.DefaultKey())
-	if err != nil {
-		return fmt.Errorf("default provider not available: %w", err)
-	}
-	cfg = resolveWebSearchSupport(ctx, cfg, defaultClient, errors)
+	// Resolve a fallback client for web search probing and server fallback.
+	// When no "default" provider is configured, probe and fallback are skipped.
+	defaultClient := resolveDefaultClient(providerMgr, errors)
+	resolvePerProviderWebSearch(ctx, cfg, providerMgr, errors)
 
 	sessionStats := stats.NewSessionStats()
 	// Set per-model pricing if configured
@@ -94,14 +92,9 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 
 	// Determine the default provider to use as the fallback Provider.
 	// *anthropic.Client directly implements server.Provider.
-	var fallbackProvider server.Provider = defaultClient
-
-	// Wrap with injected search orchestrator when configured.
-	if websearchinjected.IsEnabled(cfg) {
-		orchestrator := websearchinjected.WrapProvider(defaultClient, cfg.TavilyAPIKey, cfg.FirecrawlAPIKey, cfg.SearchMaxRounds)
-		// *websearch.Orchestrator also implements server.Provider.
-		fallbackProvider = orchestrator
-		logger.Info("injected web search enabled", "tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "")
+	var fallbackProvider server.Provider
+	if defaultClient != nil {
+		fallbackProvider = defaultClient
 	}
 
 	handler := server.New(server.Config{
@@ -111,9 +104,25 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 		Tracer:      tracer,
 		TraceErrors: errors,
 		Stats:       sessionStats,
+		AppConfig:   cfg,
 	})
 
 	return runHTTPServer(ctx, cfg.Addr, handler, errors, sessionStats)
+}
+
+// resolveDefaultClient returns the provider client for the default key.
+// Returns nil when no default provider is configured (all models use explicit routing).
+func resolveDefaultClient(pm *provider.ProviderManager, errors io.Writer) *anthropic.Client {
+	if pm.DefaultKey() == "" {
+		logger.Warn("no default provider configured; web search probing and server fallback disabled")
+		return nil
+	}
+	client, err := pm.ClientForKey(pm.DefaultKey())
+	if err != nil {
+		logger.Warn("default provider client not available", "error", err)
+		return nil
+	}
+	return client
 }
 
 // buildProviderDefsFromConfig converts config into provider definition map.
@@ -122,11 +131,12 @@ func buildProviderDefsFromConfig(cfg config.Config) map[string]provider.Provider
 		defs := make(map[string]provider.ProviderConfig, len(cfg.ProviderDefs))
 		for key, def := range cfg.ProviderDefs {
 			defs[key] = provider.ProviderConfig{
-				BaseURL:   def.BaseURL,
-				APIKey:    def.APIKey,
-				Version:   def.Version,
-				UserAgent: def.UserAgent,
-				Protocol:  def.Protocol,
+				BaseURL:          def.BaseURL,
+				APIKey:           def.APIKey,
+				Version:          def.Version,
+				UserAgent:        def.UserAgent,
+				Protocol:         def.Protocol,
+				WebSearchSupport: string(def.WebSearchSupport),
 			}
 		}
 		return defs
@@ -161,44 +171,72 @@ type webSearchProber interface {
 	ProbeWebSearch(context.Context, string) (bool, error)
 }
 
-func resolveWebSearchSupport(ctx context.Context, cfg config.Config, prober webSearchProber, errors io.Writer) config.Config {
-	switch cfg.WebSearchSupport {
-	case config.WebSearchSupportDisabled:
-		logger.Info("web_search disabled by config")
-		fmt.Fprintln(errors, "web_search disabled by config")
-		return cfg
-	case config.WebSearchSupportEnabled:
-		logger.Info("web_search forced enabled by config")
-		return cfg
-	case config.WebSearchSupportInjected:
-		logger.Info("web_search injected mode enabled, search executed server-side via Tavily/Firecrawl")
-		return cfg
+// resolvePerProviderWebSearch probes each Anthropic-protocol provider for web_search
+// support and stores the resolved result in the ProviderManager.
+func resolvePerProviderWebSearch(ctx context.Context, cfg config.Config, pm *provider.ProviderManager, errors io.Writer) {
+	if pm == nil {
+		return
+	}
+	for _, key := range pm.ProviderKeys() {
+		// Skip non-Anthropic providers (e.g. OpenAI protocol).
+		if pm.ProtocolForKey(key) != "anthropic" {
+			pm.SetResolvedWebSearch(key, "disabled")
+			logger.Info("web_search disabled for non-anthropic provider", "provider", key)
+			continue
+		}
+
+		// Resolve the effective config: per-provider override > global.
+		support := cfg.WebSearchForProvider(key)
+
+		switch support {
+		case config.WebSearchSupportDisabled:
+			pm.SetResolvedWebSearch(key, "disabled")
+			logger.Info("web_search disabled by config", "provider", key)
+			fmt.Fprintf(errors, "web_search disabled for provider %s\n", key)
+		case config.WebSearchSupportEnabled:
+			pm.SetResolvedWebSearch(key, "enabled")
+			logger.Info("web_search forced enabled by config", "provider", key)
+		case config.WebSearchSupportInjected:
+			pm.SetResolvedWebSearch(key, "injected")
+			logger.Info("web_search injected mode enabled", "provider", key)
+		default:
+			// Auto: probe the provider.
+			resolved := probeProviderWebSearch(ctx, key, pm, errors)
+			pm.SetResolvedWebSearch(key, resolved)
+		}
+	}
+}
+
+// probeProviderWebSearch probes a single provider for web_search support.
+// Returns "enabled" or "disabled".
+func probeProviderWebSearch(ctx context.Context, key string, pm *provider.ProviderManager, errors io.Writer) string {
+	client, err := pm.ClientForKey(key)
+	if err != nil {
+		logger.Warn("web_search probe skipped: client not available", "provider", key, "error", err)
+		return "disabled"
 	}
 
-	model := cfg.WebSearchProbeModel()
-	if model == "" {
-		cfg.DisableWebSearch()
-		logger.Warn("web_search auto probe skipped: no default model alias; tool injection disabled")
-		return cfg
+	upstreamModel := pm.FirstUpstreamModelForKey(key)
+	if upstreamModel == "" {
+		logger.Warn("web_search auto probe skipped: no model routes to provider", "provider", key)
+		return "disabled"
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	supported, err := prober.ProbeWebSearch(probeCtx, model)
+	supported, err := client.ProbeWebSearch(probeCtx, upstreamModel)
 	if err != nil {
-		cfg.DisableWebSearch()
-		logger.Warn("web_search auto probe failed; tool injection disabled", "error", err)
-		fmt.Fprintf(errors, "web_search auto probe failed; tool injection disabled: %v\n", err)
-		return cfg
+		logger.Warn("web_search auto probe failed", "provider", key, "error", err)
+		fmt.Fprintf(errors, "web_search auto probe failed for provider %s: %v\n", key, err)
+		return "disabled"
 	}
 	if !supported {
-		cfg.DisableWebSearch()
-		logger.Warn("web_search unsupported by provider; tool injection disabled", "model", model)
-		fmt.Fprintln(errors, "web_search unsupported by provider; tool injection disabled")
-		return cfg
+		logger.Warn("web_search unsupported by provider", "provider", key, "model", upstreamModel)
+		fmt.Fprintf(errors, "web_search unsupported by provider %s\n", key)
+		return "disabled"
 	}
-	logger.Info("web_search supported by provider", "model", model)
-	return cfg
+	logger.Info("web_search supported by provider", "provider", key, "model", upstreamModel)
+	return "enabled"
 }
 
 func runCaptureResponse(ctx context.Context, cfg config.Config, errors io.Writer) error {

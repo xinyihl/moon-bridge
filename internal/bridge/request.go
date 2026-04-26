@@ -127,7 +127,7 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 	return messages, system, nil
 }
 
-func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error) {
+func (bridge *Bridge) convertTools(tools []openai.Tool, opt RequestOptions) ([]anthropic.Tool, error) {
 	converted := make([]anthropic.Tool, 0, len(tools))
 	for index, tool := range tools {
 		switch tool.Type {
@@ -155,19 +155,38 @@ func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error
 				}
 			}
 		case "web_search", "web_search_preview":
-			if bridge.cfg.WebSearchInjected() {
-				converted = append(converted, websearchinjected.InjectTools(bridge.cfg.FirecrawlAPIKey)...)
+			wsMode := opt.WebSearchMode
+			if wsMode == "" {
+				// Fall back to global config for backward compatibility.
+				if bridge.cfg.WebSearchInjected() {
+					wsMode = "injected"
+				} else if bridge.cfg.WebSearchEnabled() {
+					wsMode = "enabled"
+				} else {
+					wsMode = "disabled"
+				}
+			}
+			if wsMode == "injected" {
+				fcKey := opt.FirecrawlAPIKey
+				if fcKey == "" {
+					fcKey = bridge.cfg.FirecrawlAPIKey
+				}
+				converted = append(converted, websearchinjected.InjectTools(fcKey)...)
 				continue
 			}
-			if !bridge.cfg.WebSearchEnabled() {
+			if wsMode != "enabled" {
 				log := logger.L().With("tool_type", tool.Type)
 				log.Debug("skipping web_search tool because provider support is disabled")
 				continue
 			}
+			maxUses := opt.WebSearchMaxUses
+			if maxUses <= 0 {
+				maxUses = bridge.webSearchMaxUses()
+			}
 			converted = append(converted, anthropic.Tool{
 				Name:    "web_search",
 				Type:    "web_search_20250305",
-				MaxUses: bridge.webSearchMaxUses(),
+				MaxUses: maxUses,
 			})
 		case "file_search", "computer_use_preview", "image_generation":
 			continue
@@ -273,17 +292,18 @@ func (bridge *Bridge) planCache(request openai.ResponsesRequest, converted anthr
 		MinimumValueScore:        cfg.MinimumValueScore,
 	}, bridge.registry)
 	return planner.Plan(cache.PlanInput{
-		ProviderID:        "anthropic",
-		UpstreamAPIKeyID:  "configured-provider-key",
-		Model:             converted.Model,
-		PromptCacheKey:    request.PromptCacheKey,
-		ToolsHash:         toolsHash,
-		SystemHash:        systemHash,
-		MessagePrefixHash: messagesHash,
-		ToolCount:         len(converted.Tools),
-		SystemBlockCount:  len(converted.System),
-		MessageCount:      len(converted.Messages),
-		EstimatedTokens:   estimateTokens(converted),
+		ProviderID:         "anthropic",
+		UpstreamAPIKeyID:   "configured-provider-key",
+		Model:              converted.Model,
+		PromptCacheKey:     request.PromptCacheKey,
+		ToolsHash:          toolsHash,
+		SystemHash:         systemHash,
+		MessagePrefixHash:  messagesHash,
+		MessageBreakpoints: cacheMessageBreakpointCandidates(converted.Messages),
+		ToolCount:          len(converted.Tools),
+		SystemBlockCount:   len(converted.System),
+		MessageCount:       len(converted.Messages),
+		EstimatedTokens:    estimateTokens(converted),
 	})
 }
 
@@ -302,22 +322,68 @@ func (bridge *Bridge) injectCacheControl(request *anthropic.MessageRequest, plan
 		switch breakpointValue.Scope {
 		case "tools":
 			if len(request.Tools) > 0 {
-				request.Tools[len(request.Tools)-1].CacheControl = cacheControl
+				index := breakpointValue.ScopeIndex
+				if index < 0 || index >= len(request.Tools) {
+					index = len(request.Tools) - 1
+				}
+				request.Tools[index].CacheControl = cacheControl
 			}
 		case "system":
 			if len(request.System) > 0 {
-				request.System[len(request.System)-1].CacheControl = cacheControl
+				index := breakpointValue.ScopeIndex
+				if index < 0 || index >= len(request.System) {
+					index = len(request.System) - 1
+				}
+				request.System[index].CacheControl = cacheControl
 			}
 		case "messages":
 			if len(request.Messages) > 0 {
-				messageIndex := len(request.Messages) - 1
+				messageIndex := breakpointValue.ScopeIndex
+				if messageIndex < 0 || messageIndex >= len(request.Messages) {
+					messageIndex = len(request.Messages) - 1
+				}
 				contentIndex := len(request.Messages[messageIndex].Content) - 1
+				if breakpointValue.ContentIndex >= 0 && breakpointValue.ContentIndex < len(request.Messages[messageIndex].Content) {
+					contentIndex = breakpointValue.ContentIndex
+				}
 				if contentIndex >= 0 {
 					request.Messages[messageIndex].Content[contentIndex].CacheControl = cacheControl
 				}
 			}
 		}
 	}
+}
+
+func cacheMessageBreakpointCandidates(messages []anthropic.Message) []cache.MessageBreakpointCandidate {
+	candidates := make([]cache.MessageBreakpointCandidate, 0, len(messages))
+	for messageIndex, message := range messages {
+		contentIndex := lastCacheableContentIndex(message.Content)
+		if contentIndex < 0 {
+			continue
+		}
+		blockPath := fmt.Sprintf("messages[%d].content[%d]", messageIndex, contentIndex)
+		if contentIndex == len(message.Content)-1 {
+			blockPath = fmt.Sprintf("messages[%d].content[last]", messageIndex)
+		}
+		candidates = append(candidates, cache.MessageBreakpointCandidate{
+			MessageIndex: messageIndex,
+			ContentIndex: contentIndex,
+			BlockPath:    blockPath,
+			Role:         message.Role,
+		})
+	}
+	return candidates
+}
+
+func lastCacheableContentIndex(content []anthropic.ContentBlock) int {
+	for index := len(content) - 1; index >= 0; index-- {
+		block := content[index]
+		if block.Type == "text" && strings.TrimSpace(block.Text) == "" {
+			continue
+		}
+		return index
+	}
+	return -1
 }
 
 // perRequestDeepSeek returns the DeepSeek state from a session if DeepSeek V4 is enabled.

@@ -26,6 +26,7 @@ type ProviderConfig struct {
 	UserAgent string     `yaml:"user_agent"`
 	Protocol  string     // "anthropic" (default) or "openai"
 	HTTP      HTTPConfig `yaml:"http"`
+	WebSearchSupport string // "auto", "enabled", "disabled", "injected", or "" (inherit global)
 }
 
 // ModelRoute maps a model alias to a provider and an upstream model name.
@@ -47,6 +48,7 @@ type ProviderManager struct {
 	providers map[string]ProviderConfig    // provider key -> config (for inspection)
 	routes    map[string]ModelRoute        // model alias -> route
 	defaultK  string                       // default provider key
+	resolvedWS map[string]string           // provider key -> resolved web search support
 }
 
 // NewProviderManager creates a ProviderManager from provider configs and model routes.
@@ -54,9 +56,10 @@ type ProviderManager struct {
 // routes: model alias -> ModelRoute
 func NewProviderManager(providerCfgs map[string]ProviderConfig, routes map[string]ModelRoute) (*ProviderManager, error) {
 	pm := &ProviderManager{
-		clients:   make(map[string]*anthropic.Client, len(providerCfgs)),
-		providers: providerCfgs,
-		routes:    routes,
+		clients:    make(map[string]*anthropic.Client, len(providerCfgs)),
+		providers:  providerCfgs,
+		routes:     routes,
+		resolvedWS: make(map[string]string, len(providerCfgs)),
 	}
 
 	// Build clients for each provider config.
@@ -288,4 +291,53 @@ func (pm *ProviderManager) ProviderAPIKey(key string) string {
 		return ""
 	}
 	return cfg.APIKey
+}
+// ProviderKeyForModel returns the provider key that serves the given model alias.
+// Falls back to defaultK when the model has no explicit route.
+func (pm *ProviderManager) ProviderKeyForModel(modelAlias string) string {
+	route, ok := pm.routes[modelAlias]
+	if !ok || route.Provider == "" {
+		return pm.defaultK
+	}
+	return route.Provider
+}
+
+// SetResolvedWebSearch stores the resolved web search support for a provider key.
+func (pm *ProviderManager) SetResolvedWebSearch(key string, support string) {
+	pm.resolvedWS[key] = support
+}
+
+// ResolvedWebSearch returns the resolved web search support for a provider key.
+// Returns empty string if not yet resolved.
+func (pm *ProviderManager) ResolvedWebSearch(key string) string {
+	return pm.resolvedWS[key]
+}
+
+// ResolvedWebSearchForModel returns the resolved web search support for a model alias.
+func (pm *ProviderManager) ResolvedWebSearchForModel(modelAlias string) string {
+	return pm.resolvedWS[pm.ProviderKeyForModel(modelAlias)]
+}
+
+// WebSearchConfigForKey returns the configured web search support for a provider key.
+func (pm *ProviderManager) WebSearchConfigForKey(key string) string {
+	cfg, ok := pm.providers[key]
+	if !ok {
+		return ""
+	}
+	return cfg.WebSearchSupport
+}
+
+// FirstUpstreamModelForKey returns the upstream model name for the first model
+// alias routed to the given provider key. Returns empty string if none found.
+func (pm *ProviderManager) FirstUpstreamModelForKey(key string) string {
+	for _, route := range pm.routes {
+		pk := route.Provider
+		if pk == "" {
+			pk = pm.defaultK
+		}
+		if pk == key {
+			return route.Name
+		}
+	}
+	return ""
 }

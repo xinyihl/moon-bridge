@@ -4,8 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"strings"
 	"moonbridge/internal/logger"
+	"strings"
 	"sync"
 	"time"
 )
@@ -32,18 +32,27 @@ type PlannerConfig struct {
 }
 
 type PlanInput struct {
-	ProviderID        string
-	UpstreamWorkspace string
-	UpstreamAPIKeyID  string
-	Model             string
-	PromptCacheKey    string
-	ToolsHash         string
-	SystemHash        string
-	MessagePrefixHash string
-	ToolCount         int
-	SystemBlockCount  int
-	MessageCount      int
-	EstimatedTokens   int
+	ProviderID         string
+	UpstreamWorkspace  string
+	UpstreamAPIKeyID   string
+	Model              string
+	PromptCacheKey     string
+	ToolsHash          string
+	SystemHash         string
+	MessagePrefixHash  string
+	MessageBreakpoints []MessageBreakpointCandidate
+	ToolCount          int
+	SystemBlockCount   int
+	MessageCount       int
+	EstimatedTokens    int
+}
+
+type MessageBreakpointCandidate struct {
+	MessageIndex int
+	ContentIndex int
+	BlockPath    string
+	Hash         string
+	Role         string
 }
 
 type CacheCreationPlan struct {
@@ -56,10 +65,12 @@ type CacheCreationPlan struct {
 }
 
 type CacheBreakpoint struct {
-	Scope     string
-	BlockPath string
-	TTL       string
-	Hash      string
+	Scope        string
+	BlockPath    string
+	TTL          string
+	Hash         string
+	ScopeIndex   int
+	ContentIndex int
 }
 
 type UsageSignals struct {
@@ -228,22 +239,123 @@ func (planner *Planner) breakpoints(input PlanInput) []CacheBreakpoint {
 		maxBreakpoints = 4
 	}
 	breakpoints := make([]CacheBreakpoint, 0, maxBreakpoints)
-	add := func(scope, path, hash string) {
+	add := func(scope, path, hash string, scopeIndex int, contentIndex int) {
 		if len(breakpoints) >= maxBreakpoints || hash == "" {
 			return
 		}
-		breakpoints = append(breakpoints, CacheBreakpoint{Scope: scope, BlockPath: path, TTL: planner.cfg.TTL, Hash: hash})
+		breakpoints = append(breakpoints, CacheBreakpoint{
+			Scope:        scope,
+			BlockPath:    path,
+			TTL:          planner.cfg.TTL,
+			Hash:         hash,
+			ScopeIndex:   scopeIndex,
+			ContentIndex: contentIndex,
+		})
 	}
 	if input.ToolCount > 0 {
-		add("tools", "tools["+itoa(input.ToolCount-1)+"]", input.ToolsHash)
+		lastToolIndex := input.ToolCount - 1
+		add("tools", "tools["+itoa(lastToolIndex)+"]", input.ToolsHash, lastToolIndex, -1)
 	}
 	if input.SystemBlockCount > 0 {
-		add("system", "system["+itoa(input.SystemBlockCount-1)+"]", input.SystemHash)
+		lastSystemIndex := input.SystemBlockCount - 1
+		add("system", "system["+itoa(lastSystemIndex)+"]", input.SystemHash, lastSystemIndex, -1)
 	}
-	if input.MessageCount > 0 {
-		add("messages", "messages["+itoa(input.MessageCount-1)+"].content[last]", input.MessagePrefixHash)
+	remaining := maxBreakpoints - len(breakpoints)
+	if remaining > 0 {
+		for _, candidate := range selectedMessageBreakpoints(input, remaining) {
+			hash := candidate.Hash
+			if hash == "" {
+				hash = input.MessagePrefixHash
+			}
+			add("messages", candidate.BlockPath, hash, candidate.MessageIndex, candidate.ContentIndex)
+		}
 	}
 	return breakpoints
+}
+
+func selectedMessageBreakpoints(input PlanInput, limit int) []MessageBreakpointCandidate {
+	if limit <= 0 {
+		return nil
+	}
+	candidates := input.MessageBreakpoints
+	if len(candidates) == 0 && input.MessageCount > 0 {
+		lastMessageIndex := input.MessageCount - 1
+		candidates = []MessageBreakpointCandidate{{
+			MessageIndex: lastMessageIndex,
+			ContentIndex: -1,
+			BlockPath:    "messages[" + itoa(lastMessageIndex) + "].content[last]",
+			Hash:         input.MessagePrefixHash,
+		}}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	preferred := make([]MessageBreakpointCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Role == "user" {
+			preferred = append(preferred, candidate)
+		}
+	}
+
+	selected := evenlySpacedMessageBreakpoints(preferred, limit)
+	if len(selected) >= limit {
+		return selected
+	}
+
+	usedPaths := make(map[string]struct{}, len(selected))
+	for _, candidate := range selected {
+		usedPaths[candidate.BlockPath] = struct{}{}
+	}
+
+	remaining := make([]MessageBreakpointCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := usedPaths[candidate.BlockPath]; ok {
+			continue
+		}
+		remaining = append(remaining, candidate)
+	}
+	selected = append(selected, evenlySpacedMessageBreakpoints(remaining, limit-len(selected))...)
+	return selected
+}
+
+func evenlySpacedMessageBreakpoints(candidates []MessageBreakpointCandidate, limit int) []MessageBreakpointCandidate {
+	if limit <= 0 || len(candidates) == 0 {
+		return nil
+	}
+	if limit >= len(candidates) {
+		return append([]MessageBreakpointCandidate(nil), candidates...)
+	}
+
+	selected := make([]MessageBreakpointCandidate, 0, limit)
+	seen := make(map[int]struct{}, limit)
+	for slot := 1; slot <= limit; slot++ {
+		index := (slot*len(candidates) + limit - 1) / limit
+		if index > 0 {
+			index--
+		}
+		if index >= len(candidates) {
+			index = len(candidates) - 1
+		}
+		if _, ok := seen[index]; ok {
+			continue
+		}
+		seen[index] = struct{}{}
+		selected = append(selected, candidates[index])
+	}
+	if len(selected) >= limit {
+		return selected
+	}
+	for index, candidate := range candidates {
+		if len(selected) >= limit {
+			break
+		}
+		if _, ok := seen[index]; ok {
+			continue
+		}
+		selected = append(selected, candidate)
+	}
+	return selected
 }
 
 func CanonicalHash(value any) (string, error) {
