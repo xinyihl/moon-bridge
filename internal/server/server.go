@@ -248,7 +248,9 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 		events = append(events, event)
 	}
 
-	openAIEvents := server.bridge.ConvertStreamEventsWithContext(events, responsesRequest.Model, context, sess)
+	openAIEvents := server.bridge.ConvertStreamEventsWithContext(events, responsesRequest.Model, context, sess, bridge.StreamOptions{
+		PersistFinalTextReasoning: hasToolHistory(anthropicRequest.Messages),
+	})
 	record.AnthropicStreamEvents = events
 	record.OpenAIStreamEvents = openAIEvents
 	server.writeTrace(record)
@@ -335,6 +337,17 @@ func sessionKeyFromRequest(request *http.Request) string {
 		return "codex-window:" + value
 	}
 	return ""
+}
+
+func hasToolHistory(messages []anthropic.Message) bool {
+	for _, message := range messages {
+		for _, block := range message.Content {
+			if block.Type == "tool_use" || block.Type == "tool_result" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (server *Server) writeTrace(record mbtrace.Record) {

@@ -621,6 +621,14 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 	if completed.Output[1].Type != "function_call" || completed.Output[1].CallID != "call_ls" {
 		t.Fatalf("function call = %+v", completed.Output[1])
 	}
+	addedItems := streamOutputItems(t, convertedEvents, "response.output_item.added")
+	if len(addedItems) == 0 || addedItems[0].Type != "reasoning" || len(addedItems[0].Summary) != 1 {
+		t.Fatalf("first added output item should include required reasoning summary: %+v", addedItems)
+	}
+	doneItems := streamOutputItems(t, convertedEvents, "response.output_item.done")
+	if len(doneItems) == 0 || doneItems[0].Type != "reasoning" || len(doneItems[0].Summary) != 1 || doneItems[0].Summary[0].Text != "inspect before listing" {
+		t.Fatalf("first done output item should persist reasoning before tool calls: %+v", doneItems)
+	}
 
 	// Follow-up request includes the reasoning item as Codex would replay it.
 	followup := openai.ResponsesRequest{
@@ -751,7 +759,43 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 	}
 
 	sess := session.New()
-	bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess)
+	nonPersistedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess)
+	nonPersistedCompleted := streamLifecycleResponse(t, nonPersistedEvents, "response.completed")
+	if len(nonPersistedCompleted.Output) != 1 || nonPersistedCompleted.Output[0].Type != "message" {
+		t.Fatalf("non-persisted completed output = %+v", nonPersistedCompleted.Output)
+	}
+	persistedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, session.New(), bridge.StreamOptions{
+		PersistFinalTextReasoning: true,
+	})
+	persistedCompleted := streamLifecycleResponse(t, persistedEvents, "response.completed")
+	if len(persistedCompleted.Output) != 2 || persistedCompleted.Output[0].Type != "reasoning" || persistedCompleted.Output[1].Type != "message" {
+		t.Fatalf("persisted completed output = %+v", persistedCompleted.Output)
+	}
+	doneItems := streamOutputItems(t, persistedEvents, "response.output_item.done")
+	if len(doneItems) != 2 || doneItems[0].Type != "reasoning" || len(doneItems[0].Summary) != 1 || doneItems[0].Summary[0].Text != "summarize after tools" {
+		t.Fatalf("persisted done items = %+v", doneItems)
+	}
+
+	persistedFollowup := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"role":"user","content":[{"type":"input_text","text":"inspect"}],"type":"message"},
+			{"arguments":"{\"cmd\":\"ls\"}","call_id":"call_ls","name":"exec_command","type":"function_call"},
+			{"call_id":"call_ls","output":"README.md\n","type":"function_call_output"},
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"summarize after tools"}]},
+			{"role":"assistant","content":[{"type":"output_text","text":"Project summary"}],"type":"message"},
+			{"role":"user","content":[{"type":"input_text","text":"update docs"}],"type":"message"}
+		]`),
+	}
+	persistedConverted, _, err := bridgeUnderTest.ToAnthropic(persistedFollowup, nil)
+	if err != nil {
+		t.Fatalf("ToAnthropic() persisted followup error = %v", err)
+	}
+	persistedAssistant := persistedConverted.Messages[3]
+	if len(persistedAssistant.Content) != 2 || persistedAssistant.Content[0].Type != "thinking" || persistedAssistant.Content[0].Thinking != "summarize after tools" {
+		t.Fatalf("persisted assistant = %+v", persistedAssistant)
+	}
+
 	followup := openai.ResponsesRequest{
 		Model: "gpt-test",
 		Input: json.RawMessage(`[
@@ -809,4 +853,21 @@ func streamLifecycleResponse(t *testing.T, events []openai.StreamEvent, eventNam
 	}
 	t.Fatalf("%s not found in %+v", eventName, events)
 	return openai.Response{}
+}
+
+func streamOutputItems(t *testing.T, events []openai.StreamEvent, eventName string) []openai.OutputItem {
+	t.Helper()
+
+	var items []openai.OutputItem
+	for _, event := range events {
+		if event.Event != eventName {
+			continue
+		}
+		outputEvent, ok := event.Data.(openai.OutputItemEvent)
+		if !ok {
+			t.Fatalf("%s data = %T", eventName, event.Data)
+		}
+		items = append(items, outputEvent.Item)
+	}
+	return items
 }

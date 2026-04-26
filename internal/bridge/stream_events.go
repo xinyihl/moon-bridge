@@ -26,6 +26,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 		return nil
 	case "tool_use":
 		converter.hasToolCalls = true
+		events := converter.emitPendingReasoningItem()
 		if block.Name == "local_shell" {
 			item := openai.OutputItem{
 				Type:   "local_shell_call",
@@ -39,7 +40,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 				converter.deepseek.RecordToolCall(block.ID)
 			}
 			converter.addOutput(index, item)
-			return []openai.StreamEvent{converter.outputItem("response.output_item.added", index, item)}
+			return append(events, converter.outputItem("response.output_item.added", index, item))
 		}
 		if converter.context.IsCustomTool(block.Name) {
 			item := openai.OutputItem{
@@ -60,7 +61,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 				converter.deepseek.RecordToolCall(block.ID)
 			}
 			converter.addOutput(index, item)
-			return []openai.StreamEvent{converter.outputItem("response.output_item.added", index, item)}
+			return append(events, converter.outputItem("response.output_item.added", index, item))
 		}
 		name, namespace := converter.context.OpenAIFunctionToolName(block.Name)
 		item := openai.OutputItem{
@@ -77,7 +78,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 			converter.deepseek.RecordToolCall(block.ID)
 		}
 		converter.addOutput(index, item)
-		return []openai.StreamEvent{converter.outputItem("response.output_item.added", index, item)}
+		return append(events, converter.outputItem("response.output_item.added", index, item))
 	case "server_tool_use":
 		if block.Name != "web_search" {
 			return nil
@@ -113,6 +114,9 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 				Status:  "in_progress",
 				Role:    "assistant",
 				Content: []openai.ContentPart{},
+			}
+			if converter.persistTextReasoning {
+				events = append(events, converter.emitPendingReasoningItem()...)
 			}
 			converter.addOutput(index, item)
 			events = append(events,
@@ -180,6 +184,9 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 				Status:  "in_progress",
 				Role:    "assistant",
 				Content: []openai.ContentPart{},
+			}
+			if converter.persistTextReasoning {
+				events = append(events, converter.emitPendingReasoningItem()...)
 			}
 			converter.addOutput(index, item)
 			events = append(events,
