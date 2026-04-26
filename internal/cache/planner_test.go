@@ -140,6 +140,85 @@ func TestPlannerAutomaticCanDisableTopLevelCache(t *testing.T) {
 	}
 }
 
+func TestPlannerUsesRemainingBudgetForMessagePrefixes(t *testing.T) {
+	planner := cache.NewPlanner(cache.PlannerConfig{
+		Mode:                     "explicit",
+		TTL:                      "5m",
+		PromptCaching:            true,
+		ExplicitCacheBreakpoints: true,
+		MaxBreakpoints:           4,
+		MinCacheTokens:           1,
+	})
+
+	plan, err := planner.Plan(cache.PlanInput{
+		ProviderID:        "anthropic",
+		Model:             "claude-test",
+		ToolsHash:         "tools-hash",
+		SystemHash:        "system-hash",
+		MessagePrefixHash: "messages-hash",
+		ToolCount:         1,
+		SystemBlockCount:  1,
+		MessageCount:      6,
+		EstimatedTokens:   5000,
+		MessageBreakpoints: []cache.MessageBreakpointCandidate{
+			{MessageIndex: 1, ContentIndex: 0, BlockPath: "messages[1].content[last]", Role: "user"},
+			{MessageIndex: 3, ContentIndex: 0, BlockPath: "messages[3].content[last]", Role: "user"},
+			{MessageIndex: 5, ContentIndex: 0, BlockPath: "messages[5].content[last]", Role: "user"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	wantPaths := []string{
+		"tools[0]",
+		"system[0]",
+		"messages[3].content[last]",
+		"messages[5].content[last]",
+	}
+	if len(plan.Breakpoints) != len(wantPaths) {
+		t.Fatalf("breakpoints = %+v", plan.Breakpoints)
+	}
+	for index, want := range wantPaths {
+		if got := plan.Breakpoints[index].BlockPath; got != want {
+			t.Fatalf("breakpoint %d path = %q, want %q", index, got, want)
+		}
+	}
+}
+
+func TestPlannerPrefersUserMessageBreakpoints(t *testing.T) {
+	planner := cache.NewPlanner(cache.PlannerConfig{
+		Mode:                     "explicit",
+		TTL:                      "5m",
+		PromptCaching:            true,
+		ExplicitCacheBreakpoints: true,
+		MaxBreakpoints:           1,
+		MinCacheTokens:           1,
+	})
+
+	plan, err := planner.Plan(cache.PlanInput{
+		ProviderID:        "anthropic",
+		Model:             "claude-test",
+		MessagePrefixHash: "messages-hash",
+		MessageCount:      3,
+		EstimatedTokens:   4000,
+		MessageBreakpoints: []cache.MessageBreakpointCandidate{
+			{MessageIndex: 1, ContentIndex: 0, BlockPath: "messages[1].content[last]", Role: "user"},
+			{MessageIndex: 2, ContentIndex: 0, BlockPath: "messages[2].content[last]", Role: "assistant"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	if len(plan.Breakpoints) != 1 {
+		t.Fatalf("breakpoints = %+v", plan.Breakpoints)
+	}
+	if got := plan.Breakpoints[0].BlockPath; got != "messages[1].content[last]" {
+		t.Fatalf("breakpoint path = %q", got)
+	}
+}
+
 func TestPlannerSkipsShortPrefixes(t *testing.T) {
 	planner := cache.NewPlanner(cache.PlannerConfig{
 		Mode:           "automatic",
