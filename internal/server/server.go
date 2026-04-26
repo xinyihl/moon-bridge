@@ -11,6 +11,8 @@ import (
 
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/bridge"
+	"moonbridge/internal/config"
+	"moonbridge/internal/extensions/websearchinjected"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
 	"moonbridge/internal/provider"
@@ -33,6 +35,7 @@ type Config struct {
 	Tracer           *mbtrace.Tracer
 	TraceErrors      io.Writer
 	Stats            *stats.SessionStats
+	AppConfig        config.Config // full app config for per-provider resolution
 }
 
 type Server struct {
@@ -44,6 +47,7 @@ type Server struct {
 	traceErrors io.Writer
 	stats       *stats.SessionStats
 	mux         *http.ServeMux
+	appConfig   config.Config
 }
 
 func New(cfg Config) *Server {
@@ -56,6 +60,7 @@ func New(cfg Config) *Server {
 		traceErrors: cfg.TraceErrors,
 		stats:       cfg.Stats,
 		mux:         http.NewServeMux(),
+		appConfig:   cfg.AppConfig,
 	}
 	server.mux.HandleFunc("/v1/responses", server.handleResponses)
 	server.mux.HandleFunc("/responses", server.handleResponses)
@@ -120,7 +125,10 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 		return
 	}
 
-	anthropicRequest, plan, err := server.bridge.ToAnthropic(responsesRequest, sess)
+	// Resolve per-provider web search mode.
+	reqOpts := server.resolveRequestOptions(responsesRequest.Model, providerKey)
+
+	anthropicRequest, plan, err := server.bridge.ToAnthropic(responsesRequest, sess, reqOpts)
 	conversionContext := server.bridge.ConversionContext(responsesRequest)
 	record.AnthropicRequest = anthropicRequest
 	if err != nil {
@@ -517,18 +525,18 @@ func (server *Server) resolveProvider(modelAlias string, providerKey string) Pro
 	if server.providerMgr != nil {
 		// First, try routing by model alias.
 		if _, client, err := server.providerMgr.ClientFor(modelAlias); err == nil && client != nil {
-			return &anthropicClientWrapper{client: client}
+			return server.maybeWrapInjectedSearch(client, modelAlias, providerKey)
 		}
 		// Fallback: try providerKey directly.
 		if providerKey != "" {
 			if client, err := server.providerMgr.ClientForKey(providerKey); err == nil && client != nil {
-				return &anthropicClientWrapper{client: client}
+				return server.maybeWrapInjectedSearch(client, modelAlias, providerKey)
 			}
 		}
 		// Last resort: try any available provider.
 		for _, k := range server.providerMgr.ProviderKeys() {
 			if c, err := server.providerMgr.ClientForKey(k); err == nil && c != nil {
-				return &anthropicClientWrapper{client: c}
+				return server.maybeWrapInjectedSearch(c, modelAlias, k)
 			}
 		}
 	}
@@ -536,4 +544,42 @@ func (server *Server) resolveProvider(modelAlias string, providerKey string) Pro
 		return server.provider
 	}
 	return nil
+}
+
+// maybeWrapInjectedSearch wraps a client with the injected search orchestrator
+// if the resolved web search mode for this provider is "injected".
+func (server *Server) maybeWrapInjectedSearch(client *anthropic.Client, modelAlias string, providerKey string) Provider {
+	key := providerKey
+	if key == "" && server.providerMgr != nil {
+		key = server.providerMgr.ProviderKeyForModel(modelAlias)
+	}
+	if server.providerMgr != nil && server.providerMgr.ResolvedWebSearch(key) == "injected" {
+		tavilyKey := server.appConfig.WebSearchTavilyKeyForProvider(key)
+		firecrawlKey := server.appConfig.WebSearchFirecrawlKeyForProvider(key)
+		maxRounds := server.appConfig.WebSearchMaxRoundsForProvider(key)
+		logger.L().Debug("wrapping provider with injected search orchestrator", "provider", key)
+		return websearchinjected.WrapProvider(client, tavilyKey, firecrawlKey, maxRounds)
+	}
+	return &anthropicClientWrapper{client: client}
+}
+
+// resolveRequestOptions builds per-request bridge options based on the provider's
+// resolved web search support.
+func (server *Server) resolveRequestOptions(modelAlias string, providerKey string) bridge.RequestOptions {
+	if server.providerMgr == nil {
+		return bridge.RequestOptions{}
+	}
+	key := providerKey
+	if key == "" {
+		key = server.providerMgr.ProviderKeyForModel(modelAlias)
+	}
+	wsMode := server.providerMgr.ResolvedWebSearch(key)
+	if wsMode == "" {
+		return bridge.RequestOptions{}
+	}
+	return bridge.RequestOptions{
+		WebSearchMode:    wsMode,
+		WebSearchMaxUses: server.appConfig.WebSearchMaxUsesForProvider(key),
+		FirecrawlAPIKey:  server.appConfig.WebSearchFirecrawlKeyForProvider(key),
+	}
 }

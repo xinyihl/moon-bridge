@@ -3,11 +3,11 @@ package app
 import (
 	"bytes"
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 
 	"moonbridge/internal/config"
+	"moonbridge/internal/provider"
 	mbtrace "moonbridge/internal/trace"
 )
 
@@ -42,81 +42,99 @@ func TestCaptureTraceDirectoriesUseSession(t *testing.T) {
 	}
 }
 
-type fakeWebSearchProber struct {
-	supported bool
-	err       error
-	called    bool
-	model     string
-}
-
-func (prober *fakeWebSearchProber) ProbeWebSearch(context.Context, string) (bool, error) {
-	prober.called = true
-	return prober.supported, prober.err
-}
-
-func TestResolveWebSearchSupportAutoDisablesUnsupportedProvider(t *testing.T) {
-	prober := &fakeWebSearchProber{supported: false}
+func TestResolvePerProviderWebSearchDisabledByConfig(t *testing.T) {
 	cfg := config.Config{
-		WebSearchSupport: config.WebSearchSupportAuto,
-		DefaultModel:     "moonbridge",
-		ModelMap:         map[string]string{"moonbridge": "claude-test"},
-	}
-
-	resolved := resolveWebSearchSupport(context.Background(), cfg, prober, &bytes.Buffer{})
-	if !prober.called {
-		t.Fatal("ProbeWebSearch was not called")
-	}
-	if resolved.WebSearchSupport != config.WebSearchSupportDisabled {
-		t.Fatalf("WebSearchSupport = %q, want disabled", resolved.WebSearchSupport)
-	}
-	if resolved.WebSearchEnabled() {
-		t.Fatal("WebSearchEnabled() = true, want false")
-	}
-}
-
-func TestResolveWebSearchSupportDisabledSkipsProbe(t *testing.T) {
-	prober := &fakeWebSearchProber{supported: true}
-	cfg := config.Config{WebSearchSupport: config.WebSearchSupportDisabled}
-
-	resolved := resolveWebSearchSupport(context.Background(), cfg, prober, &bytes.Buffer{})
-	if prober.called {
-		t.Fatal("ProbeWebSearch was called for disabled web_search")
-	}
-	if resolved.WebSearchEnabled() {
-		t.Fatal("WebSearchEnabled() = true, want false")
-	}
-}
-
-func TestResolveWebSearchSupportDisablesWhenProbeModelIsMissing(t *testing.T) {
-	prober := &fakeWebSearchProber{supported: true}
-	cfg := config.Config{
-		WebSearchSupport: config.WebSearchSupportAuto,
-		ProviderModels: map[string]config.ProviderModelConfig{
-			"slow": {Name: "claude-slow"},
-			"fast": {Name: "claude-fast"},
+		ProviderDefs: map[string]config.ProviderDef{
+			"default": {WebSearchSupport: config.WebSearchSupportDisabled},
 		},
 	}
-
-	resolved := resolveWebSearchSupport(context.Background(), cfg, prober, &bytes.Buffer{})
-	if prober.called {
-		t.Fatal("ProbeWebSearch was called without a deterministic model")
+	pm, err := provider.NewProviderManager(
+		map[string]provider.ProviderConfig{
+			"default": {BaseURL: "https://test.example.test", APIKey: "test-key"},
+		},
+		map[string]provider.ModelRoute{
+			"moonbridge": {Name: "claude-test", Provider: "default"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if resolved.WebSearchEnabled() {
-		t.Fatal("WebSearchEnabled() = true, want false without a probe model")
+
+	resolvePerProviderWebSearch(context.Background(), cfg, pm, &bytes.Buffer{})
+	if got := pm.ResolvedWebSearch("default"); got != "disabled" {
+		t.Fatalf("ResolvedWebSearch(default) = %q, want disabled", got)
 	}
 }
 
-func TestResolveWebSearchSupportDisablesOnProbeInfrastructureError(t *testing.T) {
-	prober := &fakeWebSearchProber{err: errors.New("network down")}
+func TestResolvePerProviderWebSearchEnabledByConfig(t *testing.T) {
 	cfg := config.Config{
-		WebSearchSupport: config.WebSearchSupportAuto,
-		DefaultModel:     "moonbridge",
-		ModelMap:         map[string]string{"moonbridge": "claude-test"},
+		ProviderDefs: map[string]config.ProviderDef{
+			"default": {WebSearchSupport: config.WebSearchSupportEnabled},
+		},
+	}
+	pm, err := provider.NewProviderManager(
+		map[string]provider.ProviderConfig{
+			"default": {BaseURL: "https://test.example.test", APIKey: "test-key"},
+		},
+		map[string]provider.ModelRoute{
+			"moonbridge": {Name: "claude-test", Provider: "default"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	resolved := resolveWebSearchSupport(context.Background(), cfg, prober, &bytes.Buffer{})
-	if resolved.WebSearchEnabled() {
-		t.Fatal("WebSearchEnabled() = true, want false when auto probe cannot prove support")
+	resolvePerProviderWebSearch(context.Background(), cfg, pm, &bytes.Buffer{})
+	if got := pm.ResolvedWebSearch("default"); got != "enabled" {
+		t.Fatalf("ResolvedWebSearch(default) = %q, want enabled", got)
+	}
+}
+
+func TestResolvePerProviderWebSearchNonAnthropicDisabled(t *testing.T) {
+	cfg := config.Config{
+		WebSearchSupport: config.WebSearchSupportEnabled,
+		ProviderDefs: map[string]config.ProviderDef{
+			"openai": {},
+		},
+	}
+	pm, err := provider.NewProviderManager(
+		map[string]provider.ProviderConfig{
+			"openai": {BaseURL: "https://openai.example.test", APIKey: "key", Protocol: "openai"},
+		},
+		map[string]provider.ModelRoute{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolvePerProviderWebSearch(context.Background(), cfg, pm, &bytes.Buffer{})
+	if got := pm.ResolvedWebSearch("openai"); got != "disabled" {
+		t.Fatalf("ResolvedWebSearch(openai) = %q, want disabled for non-anthropic", got)
+	}
+}
+
+func TestResolvePerProviderWebSearchFallsBackToGlobal(t *testing.T) {
+	cfg := config.Config{
+		WebSearchSupport: config.WebSearchSupportDisabled,
+		ProviderDefs: map[string]config.ProviderDef{
+			"default": {}, // no per-provider override
+		},
+	}
+	pm, err := provider.NewProviderManager(
+		map[string]provider.ProviderConfig{
+			"default": {BaseURL: "https://test.example.test", APIKey: "test-key"},
+		},
+		map[string]provider.ModelRoute{
+			"moonbridge": {Name: "claude-test", Provider: "default"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolvePerProviderWebSearch(context.Background(), cfg, pm, &bytes.Buffer{})
+	if got := pm.ResolvedWebSearch("default"); got != "disabled" {
+		t.Fatalf("ResolvedWebSearch(default) = %q, want disabled (from global fallback)", got)
 	}
 }
 

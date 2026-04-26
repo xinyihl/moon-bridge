@@ -127,7 +127,7 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 	return messages, system, nil
 }
 
-func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error) {
+func (bridge *Bridge) convertTools(tools []openai.Tool, opt RequestOptions) ([]anthropic.Tool, error) {
 	converted := make([]anthropic.Tool, 0, len(tools))
 	for index, tool := range tools {
 		switch tool.Type {
@@ -155,19 +155,38 @@ func (bridge *Bridge) convertTools(tools []openai.Tool) ([]anthropic.Tool, error
 				}
 			}
 		case "web_search", "web_search_preview":
-			if bridge.cfg.WebSearchInjected() {
-				converted = append(converted, websearchinjected.InjectTools(bridge.cfg.FirecrawlAPIKey)...)
+			wsMode := opt.WebSearchMode
+			if wsMode == "" {
+				// Fall back to global config for backward compatibility.
+				if bridge.cfg.WebSearchInjected() {
+					wsMode = "injected"
+				} else if bridge.cfg.WebSearchEnabled() {
+					wsMode = "enabled"
+				} else {
+					wsMode = "disabled"
+				}
+			}
+			if wsMode == "injected" {
+				fcKey := opt.FirecrawlAPIKey
+				if fcKey == "" {
+					fcKey = bridge.cfg.FirecrawlAPIKey
+				}
+				converted = append(converted, websearchinjected.InjectTools(fcKey)...)
 				continue
 			}
-			if !bridge.cfg.WebSearchEnabled() {
+			if wsMode != "enabled" {
 				log := logger.L().With("tool_type", tool.Type)
 				log.Debug("skipping web_search tool because provider support is disabled")
 				continue
 			}
+			maxUses := opt.WebSearchMaxUses
+			if maxUses <= 0 {
+				maxUses = bridge.webSearchMaxUses()
+			}
 			converted = append(converted, anthropic.Tool{
 				Name:    "web_search",
 				Type:    "web_search_20250305",
-				MaxUses: bridge.webSearchMaxUses(),
+				MaxUses: maxUses,
 			})
 		case "file_search", "computer_use_preview", "image_generation":
 			continue

@@ -65,6 +65,7 @@ type ProviderDefFileConfig struct {
 	Version   string `yaml:"version"`
 	UserAgent string `yaml:"user_agent"`
 	Protocol  string `yaml:"protocol"`
+	WebSearch WebSearchFileConfig `yaml:"web_search"`
 }
 
 // ModelPricingFileConfig holds optional per-model pricing in RMB per M tokens.
@@ -280,13 +281,20 @@ func fromProviderDefFileConfig(fileConfig map[string]ProviderDefFileConfig) map[
 		if trimmedKey == "" {
 			continue
 		}
-		defs[trimmedKey] = ProviderDef{
-			BaseURL:   strings.TrimRight(strings.TrimSpace(def.BaseURL), "/"),
-			APIKey:    strings.TrimSpace(def.APIKey),
-			Version:   strings.TrimSpace(def.Version),
-			UserAgent: strings.TrimSpace(def.UserAgent),
-			Protocol:   strings.TrimSpace(def.Protocol),
+		wsSupport, _ := parseWebSearchSupport(def.WebSearch.Support)
+		pd := ProviderDef{
+			BaseURL:          strings.TrimRight(strings.TrimSpace(def.BaseURL), "/"),
+			APIKey:           strings.TrimSpace(def.APIKey),
+			Version:          strings.TrimSpace(def.Version),
+			UserAgent:        strings.TrimSpace(def.UserAgent),
+			Protocol:         strings.TrimSpace(def.Protocol),
+			WebSearchSupport: wsSupport,
+			WebSearchMaxUses: def.WebSearch.MaxUses,
+			TavilyAPIKey:     strings.TrimSpace(def.WebSearch.TavilyAPIKey),
+			FirecrawlAPIKey:  strings.TrimSpace(def.WebSearch.FirecrawlAPIKey),
+			SearchMaxRounds:  def.WebSearch.SearchMaxRounds,
 		}
+		defs[trimmedKey] = pd
 	}
 	return defs
 }
