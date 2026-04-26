@@ -219,6 +219,36 @@ func TestToAnthropicConvertsCodexNamespaceFunctionHistoryAndToolChoice(t *testin
 	}
 }
 
+func TestToAnthropicRecoversConcatenatedFunctionCallArgumentsFromHistory(t *testing.T) {
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"toolu_1","name":"lookup","arguments":"{\"query\":\"A\"}"},
+			{"type":"function_call","call_id":"toolu_2","name":"lookup","arguments":"{\"query\":\"A\"}{\"query\":\"B\"}"},
+			{"type":"function_call_output","call_id":"toolu_1","output":"A result"},
+			{"type":"function_call_output","call_id":"toolu_2","output":"B result"}
+		]`),
+	}
+
+	converted, _, err := testBridge().ToAnthropic(request, nil)
+	if err != nil {
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
+	}
+	if _, err := json.Marshal(converted); err != nil {
+		t.Fatalf("Marshal converted request error = %v", err)
+	}
+	assistant := converted.Messages[0]
+	if assistant.Role != "assistant" || len(assistant.Content) != 2 {
+		t.Fatalf("assistant history = %+v", assistant)
+	}
+	if string(assistant.Content[0].Input) != `{"query":"A"}` {
+		t.Fatalf("first tool input = %s", assistant.Content[0].Input)
+	}
+	if string(assistant.Content[1].Input) != `{"query":"B"}` {
+		t.Fatalf("second tool input = %s", assistant.Content[1].Input)
+	}
+}
+
 func TestToAnthropicConvertsCodexLocalShellHistoryAndOutput(t *testing.T) {
 	request := openai.ResponsesRequest{
 		Model: "gpt-test",

@@ -6,10 +6,10 @@ import (
 	"testing"
 
 	"moonbridge/internal/anthropic"
+	"moonbridge/internal/bridge"
 	"moonbridge/internal/config"
 	"moonbridge/internal/openai"
 	"moonbridge/internal/session"
-	"moonbridge/internal/bridge"
 )
 
 func TestConvertStreamEventsConvertsTextLifecycle(t *testing.T) {
@@ -84,6 +84,53 @@ func TestConvertStreamEventsConvertsToolArguments(t *testing.T) {
 	item := completed.Output[0]
 	if item.Type != "function_call" || item.Status != "completed" || item.Name != "lookup" || item.CallID != "toolu_1" || item.Arguments != `{"id":"42"}` {
 		t.Fatalf("completed function item = %+v", item)
+	}
+}
+
+func TestConvertStreamEventsTreatsReusedToolUseIndexAsNewBlock(t *testing.T) {
+	events := []anthropic.StreamEvent{
+		{Type: "message_start", Message: &anthropic.MessageResponse{ID: "msg_1", Type: "message", Role: "assistant"}},
+		{Type: "content_block_start", Index: 1, ContentBlock: &anthropic.ContentBlock{Type: "tool_use", ID: "toolu_1", Name: "lookup", Input: json.RawMessage(`{}`)}},
+		{Type: "content_block_delta", Index: 1, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: `{"query":"A"}`}},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "content_block_start", Index: 1, ContentBlock: &anthropic.ContentBlock{Type: "tool_use", ID: "toolu_2", Name: "lookup", Input: json.RawMessage(`{}`)}},
+		{Type: "content_block_delta", Index: 1, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: `{"query":"B"}`}},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
+		{Type: "message_stop"},
+	}
+
+	converted := testBridge().ConvertStreamEvents(events, "gpt-test")
+	var doneEvents []openai.FunctionCallArgumentsDoneEvent
+	for _, event := range converted {
+		if event.Event != "response.function_call_arguments.done" {
+			continue
+		}
+		done := event.Data.(openai.FunctionCallArgumentsDoneEvent)
+		if strings.Contains(done.Arguments, "}{") {
+			t.Fatalf("arguments were concatenated: %+v", done)
+		}
+		doneEvents = append(doneEvents, done)
+	}
+	if len(doneEvents) != 2 {
+		t.Fatalf("done argument events = %+v", doneEvents)
+	}
+	if doneEvents[0].OutputIndex != 0 || doneEvents[0].Arguments != `{"query":"A"}` {
+		t.Fatalf("first done event = %+v", doneEvents[0])
+	}
+	if doneEvents[1].OutputIndex != 1 || doneEvents[1].Arguments != `{"query":"B"}` {
+		t.Fatalf("second done event = %+v", doneEvents[1])
+	}
+
+	completed := streamLifecycleResponse(t, converted, "response.completed")
+	if len(completed.Output) != 2 {
+		t.Fatalf("completed output = %+v", completed.Output)
+	}
+	if completed.Output[0].CallID != "toolu_1" || completed.Output[0].Arguments != `{"query":"A"}` {
+		t.Fatalf("first function item = %+v", completed.Output[0])
+	}
+	if completed.Output[1].CallID != "toolu_2" || completed.Output[1].Arguments != `{"query":"B"}` {
+		t.Fatalf("second function item = %+v", completed.Output[1])
 	}
 }
 
@@ -542,7 +589,7 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 	bridgeUnderTest := testBridgeWithConfig(config.Config{
 		DeepSeekV4:       true,
 		DefaultMaxTokens: 1024,
-		Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
+		Routes:           map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
 		Cache: config.CacheConfig{
 			Mode:          "off",
 			PromptCaching: true,
@@ -560,8 +607,6 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 		{Type: "content_block_stop", Index: 1},
 		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
 	}
-	
-
 
 	sess := session.New()
 	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess, bridge.StreamOptions{})
@@ -617,7 +662,7 @@ func TestDeepSeekSignatureOnlyThinkingIsReinjectedForToolCalls(t *testing.T) {
 	bridgeUnderTest := testBridgeWithConfig(config.Config{
 		DeepSeekV4:       true,
 		DefaultMaxTokens: 1024,
-		Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
+		Routes:           map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
 		Cache: config.CacheConfig{
 			Mode:          "off",
 			PromptCaching: true,
@@ -633,9 +678,8 @@ func TestDeepSeekSignatureOnlyThinkingIsReinjectedForToolCalls(t *testing.T) {
 		{Type: "content_block_stop", Index: 1},
 		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
 		{Type: "message_stop"},
-
 	}
-	
+
 	sess := session.New()
 	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess, bridge.StreamOptions{})
 
@@ -676,7 +720,7 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 	bridgeUnderTest := testBridgeWithConfig(config.Config{
 		DeepSeekV4:       true,
 		DefaultMaxTokens: 1024,
-		Routes: map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
+		Routes:           map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "deepseek-v4-pro"}},
 		Cache: config.CacheConfig{
 			Mode:          "off",
 			PromptCaching: true,
@@ -694,8 +738,7 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "end_turn"}},
 		{Type: "message_stop"},
 	}
-	
-	
+
 	sess := session.New()
 	bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess, bridge.StreamOptions{})
 	followup := openai.ResponsesRequest{

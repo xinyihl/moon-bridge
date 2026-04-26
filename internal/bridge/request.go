@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -52,10 +53,7 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 		case item.Type == "function_call":
 			seenToolHistory = true
 			toolName := context.AnthropicFunctionToolName(item.Namespace, item.Name)
-			toolInput := json.RawMessage(item.Arguments)
-			if len(toolInput) == 0 {
-				toolInput = json.RawMessage(`{}`)
-			}
+			toolInput := toolInputFromArguments(item.Arguments)
 			if ds != nil {
 				ds.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
 			}
@@ -69,8 +67,10 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			seenToolHistory = true
 			toolName := item.Name
 			toolInput := json.RawMessage(item.Arguments)
-			if len(toolInput) == 0 {
+			if strings.TrimSpace(item.Arguments) == "" {
 				toolName, toolInput = context.AnthropicToolUseForCustomTool(item.Name, item.Input)
+			} else {
+				toolInput = toolInputFromArguments(item.Arguments)
 			}
 			if ds != nil {
 				ds.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
@@ -412,6 +412,40 @@ type inputItem struct {
 	Input     string             `json:"input"`
 	Action    *openai.ToolAction `json:"action"`
 	Output    string             `json:"output"`
+}
+
+// toolInputFromArguments recovers histories poisoned by concatenated tool
+// argument objects while leaving ordinary invalid JSON on the existing path.
+func toolInputFromArguments(arguments string) json.RawMessage {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return json.RawMessage(`{}`)
+	}
+	if json.Valid([]byte(trimmed)) {
+		return json.RawMessage(trimmed)
+	}
+	if recovered, ok := lastConcatenatedJSONValue(trimmed); ok {
+		return recovered
+	}
+	return json.RawMessage(trimmed)
+}
+
+func lastConcatenatedJSONValue(value string) (json.RawMessage, bool) {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	var last json.RawMessage
+	count := 0
+	for {
+		var raw json.RawMessage
+		err := decoder.Decode(&raw)
+		if err == io.EOF {
+			return last, count > 1
+		}
+		if err != nil {
+			return nil, false
+		}
+		last = append(json.RawMessage(nil), raw...)
+		count++
+	}
 }
 
 func contentBlocksFromRaw(raw json.RawMessage) []anthropic.ContentBlock {

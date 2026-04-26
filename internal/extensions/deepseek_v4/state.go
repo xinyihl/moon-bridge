@@ -40,6 +40,14 @@ func NewStreamState() *StreamState {
 	}
 }
 
+func (stream *StreamState) Reset(index int) {
+	if stream == nil {
+		return
+	}
+	delete(stream.thinkingText, index)
+	delete(stream.thinkingSignature, index)
+}
+
 func (state *State) RememberForToolCalls(toolCallIDs []string, block anthropic.ContentBlock) {
 	if state == nil || !hasThinkingPayload(block) || len(toolCallIDs) == 0 {
 		return

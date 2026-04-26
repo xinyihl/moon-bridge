@@ -15,6 +15,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 	if block == nil {
 		return nil
 	}
+	converter.resetBlockState(index)
 	if converter.deepseek != nil && converter.deepseek.Start(index, block) {
 		return nil
 	}

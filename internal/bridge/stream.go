@@ -52,12 +52,12 @@ func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEv
 	for _, event := range events {
 		converted = append(converted, converter.convert(event)...)
 	}
-	
+
 	// After stream completes, feed the result back to the session's DeepSeek state.
 	if converter.deepseek != nil && sess != nil && sess.DeepSeek != nil && bridge.cfg.DeepSeekV4Enabled() {
 		sess.DeepSeek.RememberStreamResult(converter.deepseek, converter.response.OutputText)
 	}
-	
+
 	return converted
 }
 
@@ -147,6 +147,23 @@ func (converter *streamConverter) setOutput(index int, item openai.OutputItem) {
 func (converter *streamConverter) addOutput(index int, item openai.OutputItem) {
 	converter.outputIndexes[index] = len(converter.response.Output)
 	converter.response.Output = append(converter.response.Output, item)
+}
+
+// resetBlockState starts a fresh logical content block for providers that
+// reuse Anthropic stream indexes while preserving already-emitted outputs.
+func (converter *streamConverter) resetBlockState(index int) {
+	delete(converter.contentText, index)
+	delete(converter.toolArguments, index)
+	delete(converter.customToolInputs, index)
+	delete(converter.customToolInitialInputs, index)
+	delete(converter.customToolNames, index)
+	delete(converter.webSearchActions, index)
+	delete(converter.webSearchInputs, index)
+	delete(converter.itemIDs, index)
+	delete(converter.outputIndexes, index)
+	if converter.deepseek != nil {
+		converter.deepseek.Reset(index)
+	}
 }
 
 func (converter *streamConverter) hasOutput(index int) bool {
