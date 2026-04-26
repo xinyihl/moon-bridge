@@ -295,6 +295,35 @@ func TestToAnthropicRecoversConcatenatedFunctionCallArgumentsFromHistory(t *test
 	}
 }
 
+func TestToAnthropicSkipsCommentaryPhaseMessages(t *testing.T) {
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"role":"user","content":[{"type":"input_text","text":"inspect project"}],"type":"message"},
+			{"role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Collecting from upstream..."}],"type":"message"},
+			{"arguments":"{\"cmd\":\"pwd\"}","call_id":"tool_pwd","name":"exec_command","type":"function_call"},
+			{"call_id":"tool_pwd","output":"/repo\n","type":"function_call_output"},
+			{"role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Collecting from upstream..."}],"type":"message"},
+			{"role":"user","content":[{"type":"input_text","text":"continue"}],"type":"message"}
+		]`),
+	}
+
+	converted, _, err := testBridge().ToAnthropic(request, nil)
+	if err != nil {
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
+	}
+	if len(converted.Messages) != 4 {
+		t.Fatalf("messages = %+v", converted.Messages)
+	}
+	for _, message := range converted.Messages {
+		for _, block := range message.Content {
+			if block.Text == "Collecting from upstream..." {
+				t.Fatalf("commentary preamble leaked into Anthropic messages: %+v", converted.Messages)
+			}
+		}
+	}
+}
+
 func TestToAnthropicConvertsCodexLocalShellHistoryAndOutput(t *testing.T) {
 	request := openai.ResponsesRequest{
 		Model: "gpt-test",

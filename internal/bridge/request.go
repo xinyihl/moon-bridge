@@ -48,6 +48,8 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 	seenToolHistory := false
 	for _, item := range items {
 		switch {
+		case item.Phase == "commentary":
+			continue
 		case item.Type == "reasoning":
 			continue
 		case item.Type == "function_call":
@@ -404,6 +406,7 @@ type inputItem struct {
 	Type      string             `json:"type"`
 	ID        string             `json:"id"`
 	Role      string             `json:"role"`
+	Phase     string             `json:"phase"`
 	Content   json.RawMessage    `json:"content"`
 	CallID    string             `json:"call_id"`
 	Name      string             `json:"name"`
