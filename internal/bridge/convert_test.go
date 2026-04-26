@@ -72,9 +72,9 @@ func TestToAnthropicConvertsTextToolsToolChoiceAndCache(t *testing.T) {
 		ToolChoice: json.RawMessage(`"required"`),
 	}
 
-	converted, plan, err := testBridge().ToAnthropic(request)
+	converted, plan, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if converted.Model != "claude-test" || converted.MaxTokens != 50 {
 		t.Fatalf("converted model/max = %s/%d", converted.Model, converted.MaxTokens)
@@ -118,9 +118,9 @@ func TestToAnthropicAutomaticCacheAddsExplicitBreakpoints(t *testing.T) {
 		Model:        "gpt-test",
 		Instructions: "stable system prompt",
 		Input:        json.RawMessage(`"current question"`),
-	})
+	}, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 
 	if plan.Mode != "hybrid" {
@@ -156,7 +156,7 @@ func TestToAnthropicCanDisableTopLevelAutomaticCache(t *testing.T) {
 		Model:        "gpt-test",
 		Instructions: "stable system prompt",
 		Input:        json.RawMessage(`"current question"`),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -183,7 +183,7 @@ func TestToAnthropicConvertsFunctionCallOutput(t *testing.T) {
 		]`),
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}

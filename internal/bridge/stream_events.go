@@ -60,11 +60,13 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 			converter.addOutput(index, item)
 			return []openai.StreamEvent{converter.outputItem("response.output_item.added", index, item)}
 		}
+		name, namespace := converter.context.OpenAIFunctionToolName(block.Name)
 		item := openai.OutputItem{
 			Type:      "function_call",
 			ID:        "fc_" + block.ID,
 			CallID:    block.ID,
-			Name:      block.Name,
+			Name:      name,
+			Namespace: namespace,
 			Arguments: "",
 			Status:    "in_progress",
 		}

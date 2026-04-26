@@ -35,6 +35,42 @@ func TestFromAnthropicKeepsUnregisteredToolUseAsFunctionCall(t *testing.T) {
 	}
 }
 
+func TestFromAnthropicSplitsNamespacedFunctionToolForCodex(t *testing.T) {
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Tools: []openai.Tool{{
+			Type: "namespace",
+			Name: "mcp__deepwiki__",
+			Tools: []openai.Tool{{
+				Type: "function",
+				Name: "read_wiki_structure",
+			}},
+		}},
+	}
+	response := anthropic.MessageResponse{
+		ID:         "msg_123",
+		Type:       "message",
+		Role:       "assistant",
+		StopReason: "tool_use",
+		Content: []anthropic.ContentBlock{{
+			Type:  "tool_use",
+			ID:    "tool_deepwiki",
+			Name:  "mcp__deepwiki__read_wiki_structure",
+			Input: json.RawMessage(`{"repoName":"openai/codex"}`),
+		}},
+	}
+
+	bridgeUnderTest := testBridge()
+	converted := bridgeUnderTest.FromAnthropicWithContext(response, "gpt-test", bridgeUnderTest.ConversionContext(request))
+	if len(converted.Output) != 1 {
+		t.Fatalf("output = %+v", converted.Output)
+	}
+	item := converted.Output[0]
+	if item.Type != "function_call" || item.Namespace != "mcp__deepwiki__" || item.Name != "read_wiki_structure" {
+		t.Fatalf("namespaced function call = %+v", item)
+	}
+}
+
 func TestFromAnthropicMapsLocalShellToolUseForCodex(t *testing.T) {
 	response := anthropic.MessageResponse{
 		ID:         "msg_123",

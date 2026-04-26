@@ -12,9 +12,10 @@ import (
 	"moonbridge/internal/extensions/websearchinjected"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
+	"moonbridge/internal/session"
 )
 
-func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContext) ([]anthropic.Message, []anthropic.ContentBlock, error) {
+func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContext, sess *session.Session) ([]anthropic.Message, []anthropic.ContentBlock, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil, nil
 	}
@@ -38,6 +39,9 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 		return nil, nil, invalidRequest("input array is invalid", "input", "invalid_request_error")
 	}
 
+	// Get the per-request DeepSeek state from the session.
+	ds := perRequestDeepSeek(sess, bridge.cfg.DeepSeekV4Enabled())
+
 	messages := make([]anthropic.Message, 0, len(items))
 	system := make([]anthropic.ContentBlock, 0)
 	seenToolHistory := false
@@ -47,17 +51,18 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			continue
 		case item.Type == "function_call":
 			seenToolHistory = true
+			toolName := context.AnthropicFunctionToolName(item.Namespace, item.Name)
 			toolInput := json.RawMessage(item.Arguments)
 			if len(toolInput) == 0 {
 				toolInput = json.RawMessage(`{}`)
 			}
-			if bridge.deepseek != nil {
-				bridge.deepseek.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
+			if ds != nil {
+				ds.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
 			}
 			appendAssistantBlock(&messages, anthropic.ContentBlock{
 				Type:  "tool_use",
 				ID:    firstNonEmpty(item.CallID, item.ID),
-				Name:  item.Name,
+				Name:  toolName,
 				Input: toolInput,
 			})
 		case item.Type == "custom_tool_call":
@@ -67,8 +72,8 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			if len(toolInput) == 0 {
 				toolName, toolInput = context.AnthropicToolUseForCustomTool(item.Name, item.Input)
 			}
-			if bridge.deepseek != nil {
-				bridge.deepseek.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
+			if ds != nil {
+				ds.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
 			}
 			appendAssistantBlock(&messages, anthropic.ContentBlock{
 				Type:  "tool_use",
@@ -78,8 +83,8 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			})
 		case item.Type == "local_shell_call":
 			seenToolHistory = true
-			if bridge.deepseek != nil {
-				bridge.deepseek.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
+			if ds != nil {
+				ds.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
 			}
 			appendAssistantBlock(&messages, anthropic.ContentBlock{
 				Type:  "tool_use",
@@ -103,10 +108,8 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			if len(blocks) == 0 || isEmptyWebSearchPreludeBlocks(blocks) {
 				continue
 			}
-			if seenToolHistory {
-				if bridge.deepseek != nil {
-					blocks = bridge.deepseek.PrependCachedForAssistantText(blocks)
-				}
+			if seenToolHistory && ds != nil {
+				blocks = ds.PrependCachedForAssistantText(blocks)
 			}
 			messages = append(messages, anthropic.Message{Role: "assistant", Content: blocks})
 		default:
@@ -188,7 +191,10 @@ func (bridge *Bridge) webSearchMaxUses() int {
 }
 
 func (bridge *Bridge) ConversionContext(request openai.ResponsesRequest) ConversionContext {
-	return ConversionContext{CustomTools: customToolSpecs(request.Tools, "")}
+	return ConversionContext{
+		CustomTools:   customToolSpecs(request.Tools, ""),
+		FunctionTools: functionToolSpecs(request.Tools, ""),
+	}
 }
 
 func (bridge *Bridge) convertToolChoice(raw json.RawMessage, context ConversionContext) (anthropic.ToolChoice, error) {
@@ -207,9 +213,10 @@ func (bridge *Bridge) convertToolChoice(raw json.RawMessage, context ConversionC
 		}
 	}
 	var object struct {
-		Type     string `json:"type"`
-		Name     string `json:"name"`
-		Function struct {
+		Type      string `json:"type"`
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		Function  struct {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
@@ -221,6 +228,9 @@ func (bridge *Bridge) convertToolChoice(raw json.RawMessage, context ConversionC
 		name = object.Function.Name
 	}
 	if name != "" {
+		if object.Namespace != "" {
+			name = context.AnthropicFunctionToolName(object.Namespace, name)
+		}
 		if mapped := context.AnthropicToolChoiceName(name); mapped != "" {
 			name = mapped
 		}
@@ -310,6 +320,17 @@ func (bridge *Bridge) injectCacheControl(request *anthropic.MessageRequest, plan
 	}
 }
 
+// perRequestDeepSeek returns the DeepSeek state from a session if DeepSeek V4 is enabled.
+func perRequestDeepSeek(sess *session.Session, deepseekV4Enabled bool) *deepseekv4.State {
+	if !deepseekV4Enabled {
+		return nil
+	}
+	if sess == nil {
+		return nil
+	}
+	return sess.DeepSeek
+}
+
 type inputItem struct {
 	Type      string             `json:"type"`
 	ID        string             `json:"id"`
@@ -317,6 +338,7 @@ type inputItem struct {
 	Content   json.RawMessage    `json:"content"`
 	CallID    string             `json:"call_id"`
 	Name      string             `json:"name"`
+	Namespace string             `json:"namespace"`
 	Arguments string             `json:"arguments"`
 	Input     string             `json:"input"`
 	Action    *openai.ToolAction `json:"action"`

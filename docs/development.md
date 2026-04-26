@@ -112,7 +112,7 @@ go test ./internal/e2e/ -v -count=1
 
 ## 工具映射备忘
 
-- `namespace` 下的 `function` 子工具展平为 `namespace__tool`，如 `mcp__deepwiki__ask_question`。
+- `namespace` 下的 `function` 子工具发往 Anthropic 时展平为 `namespace__tool`，如 `mcp__deepwiki__ask_question`；响应回 Codex 时必须拆为 `namespace:"mcp__deepwiki__"` + `name:"ask_question"`，否则 Codex 不能解析为 MCP 调用。
 - `namespace` 下的 `custom` 子工具同样展平为 `namespace__tool`，保留 grammar 信息。
 - 查询 Codex 内部工具实现必须优先走 DeepWiki；当前确认需要 grammar/freeform 的内置 custom 工具主要是 `apply_patch` 和 Code Mode `exec`。
 - `apply_patch` 不直接暴露 raw grammar 给 Anthropic，而是拆成 `apply_patch_add_file`、`apply_patch_delete_file`、`apply_patch_update_file`、`apply_patch_replace_file`、`apply_patch_batch` 一组结构化 schema，响应回 Codex 前统一拼回 raw patch grammar；proxy 描述不能包含 Codex 原始 `FREEFORM` / grammar 提示，避免和 JSON schema 冲突。`replace_file` / `update_file + content` 代表整文件替换，会拼成 `Delete File` + `Add File`，不要生成空 `Update File` hunk。

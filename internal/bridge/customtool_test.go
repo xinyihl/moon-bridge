@@ -37,9 +37,9 @@ func TestToAnthropicPreservesCustomToolGrammar(t *testing.T) {
 		}},
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Tools) != 1 {
 		t.Fatalf("tools = %+v", converted.Tools)
@@ -143,9 +143,9 @@ func TestToAnthropicSplitsApplyPatchGrammarToolIntoSchemaProxyCollection(t *test
 		}},
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Tools) != 5 {
 		t.Fatalf("tools = %+v", converted.Tools)
@@ -204,9 +204,9 @@ func TestToAnthropicConvertsExecGrammarToolToSourceSchemaWithoutRawGrammarDescri
 		}},
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	description := converted.Tools[0].Description
 	if strings.Contains(description, "FREEFORM") || strings.Contains(description, "OpenAI custom tool grammar") {
@@ -331,7 +331,7 @@ func TestToAnthropicConvertsApplyPatchHistoryToProxyOperations(t *testing.T) {
 		}},
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -362,7 +362,7 @@ func TestToAnthropicConvertsExecGrammarToolToSourceSchema(t *testing.T) {
 		}},
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -411,7 +411,7 @@ func TestToAnthropicConvertsCustomToolCallHistoryToJSONInput(t *testing.T) {
 		}),
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -457,9 +457,9 @@ func TestToAnthropicConvertsNamespacedCustomToolWithContext(t *testing.T) {
 	}
 
 	bridgeUnderTest := testBridge()
-	convertedRequest, _, err := bridgeUnderTest.ToAnthropic(request)
+	convertedRequest, _, err := bridgeUnderTest.ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(convertedRequest.Tools) != 1 || convertedRequest.Tools[0].Name != "mcp__editor__rewrite_buffer" {
 		t.Fatalf("tools = %+v", convertedRequest.Tools)

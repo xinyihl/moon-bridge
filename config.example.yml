@@ -14,41 +14,64 @@ server:
 trace_requests: false
 
 provider:
-  base_url: "https://api.example.com"
-  api_key: "replace-with-deepseek-api-key"
-  version: "2023-06-01"
-  user_agent: "claude-cli/2.1.112 (external, cli)"
+  # 多 Provider 模式（推荐）：在 providers 下定义一个或多个上游 Provider
+  providers:
+    deepseek:
+      base_url: "https://api.deepseek.com"
+      api_key: "${DEEPSEEK_API_KEY}"
+      version: "2023-06-01"
+      user_agent: "moonbridge/1.0"
+    openai:
+      base_url: "https://api.openai.com"
+      api_key: "${OPENAI_API_KEY}"
+      user_agent: "moonbridge/1.0"
+    anthropic:
+      base_url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      version: "2023-06-01"
+      user_agent: "moonbridge/1.0"
+
+  # 模型路由：每个别名指定其 Provider 和上游模型名
+  models:
+    moonbridge:
+      provider: "deepseek"
+      name: "deepseek-v4-pro"
+      context_window: 1000000
+      max_output_tokens: 384000
+      pricing:
+        input_price: 2
+        output_price: 8
+        cache_write_price: 1
+        cache_read_price: 0.2
+    gpt-image:
+      provider: "openai"
+      name: "gpt-image-1.5"
+    gpt-tts:
+      provider: "openai"
+      name: "gpt-4o-mini-tts"
+
+  # 旧格式（兼容）：当不定义 providers 时，顶层 base_url/api_key 作为默认 Provider
+  # base_url: "https://api.example.com"
+  # api_key: "replace-with-deepseek-api-key"
+  # version: "2023-06-01"
+  # user_agent: "claude-cli/2.1.112 (external, cli)"
+
   web_search:
     support: "disabled" # auto / enabled / disabled / injected
-    # injected: bridge injects tavily_search/firecrawl_fetch as function tools
-    # and executes them server-side via Tavily/Firecrawl APIs. Requires tavily_api_key.
-    # Useful when the upstream Anthropic provider does not support web_search_20250305.
     max_uses: 8
     tavily_api_key: "replace-with-tavily-api-key"
     firecrawl_api_key: "replace-with-firecrawl-api-key"
     search_max_rounds: 5
   default_max_tokens: 65536
   default_model: "moonbridge"
-  deepseek_v4: true  # Enable DeepSeek thinking_mode extension for Codex/OpenAI reasoning requests.
-  models:
-    moonbridge:
-      name: "deepseek-v4-pro"
-      context_window: 1000000
-      max_output_tokens: 384000
-      # Optional per-model pricing in RMB per 1K tokens.
-      # When configured, session summary includes cost breakdown.
-      pricing:
-        input_price: 2
-        output_price: 8
-        cache_write_price: 1
-        cache_read_price: 0.2
+  deepseek_v4: true  # Enable DeepSeek thinking_mode extension
 
 cache:
   mode: "explicit"  # off / automatic / explicit / hybrid
   ttl: "5m"         # 5m / 1h
   prompt_caching: true
-  automatic_prompt_cache: false    # top-level request cache_control; enable only when the provider supports it well
-  explicit_cache_breakpoints: true  # block-level cache_control on tools/system/messages, matching Claude Code captures
+  automatic_prompt_cache: false
+  explicit_cache_breakpoints: true
   allow_retention_downgrade: false
   max_breakpoints: 4
   min_cache_tokens: 1024
@@ -63,7 +86,7 @@ developer:
         base_url: "https://api.openai.com"
         api_key: "replace-with-real-openai-compatible-api-key"
     anthropic:
-      model: "" # optional; leave empty to use Claude Code settings/default model
+      model: ""
       provider:
         base_url: "https://provider.example.com"
         api_key: "replace-with-real-anthropic-compatible-api-key"

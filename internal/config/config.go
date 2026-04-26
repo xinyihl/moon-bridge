@@ -48,10 +48,19 @@ type Config struct {
 	DefaultMaxTokens  int
 	ModelMap          map[string]string
 	ProviderModels    map[string]ProviderModelConfig
+	ProviderDefs      map[string]ProviderDef
 	Cache             CacheConfig
 	ResponseProxy     ResponseProxyConfig
 	AnthropicProxy    AnthropicProxyConfig
 	DeepSeekV4        bool
+}
+
+// ProviderDef defines a single upstream provider for multi-provider mode.
+type ProviderDef struct {
+	BaseURL   string
+	APIKey    string
+	Version   string
+	UserAgent string
 }
 
 type ResponseProxyConfig struct {
@@ -82,6 +91,7 @@ type CacheConfig struct {
 
 type ProviderModelConfig struct {
 	Name            string
+	Provider        string // provider key (empty = "default")
 	ContextWindow   int
 	MaxOutputTokens int
 	InputPrice      float64
@@ -107,6 +117,14 @@ func (cfg Config) Validate() error {
 }
 
 func (cfg Config) validateTransform() error {
+	// Multi-provider mode: ProviderDefs is non-empty.
+	if len(cfg.ProviderDefs) > 0 {
+		if len(cfg.ModelMap) == 0 && len(cfg.ProviderModels) == 0 {
+			return errors.New("provider.models must contain at least one model mapping")
+		}
+		return nil
+	}
+	// Legacy single-provider mode.
 	if cfg.ProviderBaseURL == "" {
 		return errors.New("provider.base_url is required")
 	}
@@ -263,6 +281,7 @@ func providerModelMap(models map[string]ProviderModelConfig) map[string]string {
 	}
 	return normalized
 }
+
 func (cfg Config) DeepSeekV4Enabled() bool {
 	return cfg.DeepSeekV4
 }

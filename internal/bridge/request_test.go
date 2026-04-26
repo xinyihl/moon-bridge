@@ -21,9 +21,9 @@ func TestToAnthropicAcceptsCodexLocalShellTool(t *testing.T) {
 	request.Include = []string{"reasoning.encrypted_content"}
 	request.ClientMetadata = map[string]any{"originator": "codex_cli"}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Tools) != 1 {
 		t.Fatalf("tools = %+v", converted.Tools)
@@ -50,9 +50,9 @@ func TestToAnthropicIgnoresCodexNativeBuiltInTools(t *testing.T) {
 		},
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Tools) != 1 {
 		t.Fatalf("tools = %+v", converted.Tools)
@@ -71,9 +71,9 @@ func TestToAnthropicConvertsCodexWebSearchTool(t *testing.T) {
 		},
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Tools) != 1 {
 		t.Fatalf("tools = %+v", converted.Tools)
@@ -98,7 +98,7 @@ func TestToAnthropicSkipsCodexWebSearchToolWhenProviderDisabled(t *testing.T) {
 	}
 
 	bridgeUnderTest := testBridgeWithWebSearchDisabled()
-	converted, _, err := bridgeUnderTest.ToAnthropic(request)
+	converted, _, err := bridgeUnderTest.ToAnthropic(request, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -119,7 +119,7 @@ func TestToAnthropicKeepsCodexWebSearchToolForModelDecision(t *testing.T) {
 		},
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -166,7 +166,7 @@ func TestToAnthropicFlattensCodexNamespaceTools(t *testing.T) {
 		},
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -190,6 +190,35 @@ func TestToAnthropicFlattensCodexNamespaceTools(t *testing.T) {
 	}
 }
 
+func TestToAnthropicConvertsCodexNamespaceFunctionHistoryAndToolChoice(t *testing.T) {
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"tool_1","namespace":"mcp__deepwiki__","name":"read_wiki_structure","arguments":"{\"repoName\":\"openai/codex\"}"}
+		]`),
+		ToolChoice: json.RawMessage(`{"type":"function","namespace":"mcp__deepwiki__","name":"read_wiki_structure"}`),
+		Tools: []openai.Tool{{
+			Type: "namespace",
+			Name: "mcp__deepwiki__",
+			Tools: []openai.Tool{{
+				Type: "function",
+				Name: "read_wiki_structure",
+			}},
+		}},
+	}
+
+	converted, _, err := testBridge().ToAnthropic(request, nil)
+	if err != nil {
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
+	}
+	if converted.Messages[0].Content[0].Name != "mcp__deepwiki__read_wiki_structure" {
+		t.Fatalf("history tool name = %+v", converted.Messages[0].Content[0])
+	}
+	if converted.ToolChoice.Name != "mcp__deepwiki__read_wiki_structure" {
+		t.Fatalf("tool choice = %+v", converted.ToolChoice)
+	}
+}
+
 func TestToAnthropicConvertsCodexLocalShellHistoryAndOutput(t *testing.T) {
 	request := openai.ResponsesRequest{
 		Model: "gpt-test",
@@ -199,7 +228,7 @@ func TestToAnthropicConvertsCodexLocalShellHistoryAndOutput(t *testing.T) {
 		]`),
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -223,9 +252,9 @@ func TestToAnthropicGroupsParallelFunctionCallsBeforeOutputs(t *testing.T) {
 		]`),
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Messages) != 3 {
 		t.Fatalf("messages = %+v", converted.Messages)
@@ -263,9 +292,9 @@ func TestToAnthropicSkipsEmptyAssistantMessageBeforeToolCall(t *testing.T) {
 		]`),
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Messages) != 3 {
 		t.Fatalf("messages = %+v", converted.Messages)
@@ -290,9 +319,9 @@ func TestToAnthropicMergesAssistantTextWithFollowingToolCall(t *testing.T) {
 		]`),
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Messages) != 3 {
 		t.Fatalf("messages = %+v", converted.Messages)
@@ -320,9 +349,9 @@ func TestToAnthropicSkipsCodexWebSearchHistoryItems(t *testing.T) {
 		]`),
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Messages) != 3 {
 		t.Fatalf("messages = %+v", converted.Messages)
@@ -346,9 +375,9 @@ func TestToAnthropicSkipsEmptyWebSearchPreludeHistory(t *testing.T) {
 		]`),
 	}
 
-	converted, _, err := testBridge().ToAnthropic(request)
+	converted, _, err := testBridge().ToAnthropic(request, nil)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	for _, message := range converted.Messages {
 		for _, block := range message.Content {

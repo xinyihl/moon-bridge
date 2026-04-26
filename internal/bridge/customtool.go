@@ -40,6 +40,28 @@ func customToolSpecs(tools []openai.Tool, namespace string) map[string]CustomToo
 	return specs
 }
 
+func functionToolSpecs(tools []openai.Tool, namespace string) map[string]FunctionToolSpec {
+	specs := map[string]FunctionToolSpec{}
+	for _, tool := range tools {
+		switch tool.Type {
+		case "function":
+			if namespace == "" {
+				continue
+			}
+			name := namespacedToolName(namespace, tool.Name)
+			specs[name] = FunctionToolSpec{
+				Namespace: namespace,
+				Name:      tool.Name,
+			}
+		case "namespace":
+			for name, spec := range functionToolSpecs(tool.Tools, namespacedToolName(namespace, tool.Name)) {
+				specs[name] = spec
+			}
+		}
+	}
+	return specs
+}
+
 func anthropicToolFromOpenAIFunction(name string, description string, parameters map[string]any) anthropic.Tool {
 	if parameters == nil {
 		parameters = map[string]any{"type": "object"}

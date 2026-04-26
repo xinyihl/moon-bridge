@@ -8,6 +8,8 @@ import (
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/config"
 	"moonbridge/internal/openai"
+	"moonbridge/internal/session"
+	"moonbridge/internal/bridge"
 )
 
 func TestConvertStreamEventsConvertsTextLifecycle(t *testing.T) {
@@ -85,6 +87,44 @@ func TestConvertStreamEventsConvertsToolArguments(t *testing.T) {
 	}
 }
 
+func TestConvertStreamEventsSplitsNamespacedFunctionTool(t *testing.T) {
+	request := openai.ResponsesRequest{
+		Model: "gpt-test",
+		Tools: []openai.Tool{{
+			Type: "namespace",
+			Name: "mcp__deepwiki__",
+			Tools: []openai.Tool{{
+				Type: "function",
+				Name: "read_wiki_structure",
+			}},
+		}},
+	}
+	events := []anthropic.StreamEvent{
+		{Type: "message_start", Message: &anthropic.MessageResponse{ID: "msg_1", Type: "message", Role: "assistant"}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &anthropic.ContentBlock{
+			Type:  "tool_use",
+			ID:    "tool_deepwiki",
+			Name:  "mcp__deepwiki__read_wiki_structure",
+			Input: json.RawMessage(`{}`),
+		}},
+		{Type: "content_block_delta", Index: 0, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: `{"repoName":"openai/codex"}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
+		{Type: "message_stop"},
+	}
+
+	bridgeUnderTest := testBridge()
+	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request), nil)
+	completed := streamLifecycleResponse(t, converted, "response.completed")
+	if len(completed.Output) != 1 {
+		t.Fatalf("completed output = %+v", completed.Output)
+	}
+	item := completed.Output[0]
+	if item.Type != "function_call" || item.Namespace != "mcp__deepwiki__" || item.Name != "read_wiki_structure" {
+		t.Fatalf("namespaced function item = %+v", item)
+	}
+}
+
 func TestConvertStreamEventsIgnoresEmptyTextDeltasBeforeToolCall(t *testing.T) {
 	events := []anthropic.StreamEvent{
 		{Type: "message_start", Message: &anthropic.MessageResponse{ID: "msg_1", Type: "message", Role: "assistant"}},
@@ -139,7 +179,7 @@ func TestConvertStreamEventsMapsRequestCustomToolToCustomToolCall(t *testing.T) 
 	}
 
 	bridgeUnderTest := testBridge()
-	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request))
+	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request), nil)
 	var customDelta openai.CustomToolCallInputDeltaEvent
 	for _, event := range converted {
 		if event.Event == "response.function_call_arguments.delta" || event.Event == "response.function_call_arguments.done" {
@@ -192,7 +232,7 @@ func TestConvertStreamEventsNormalizesApplyPatchGrammarTerminator(t *testing.T) 
 	}
 
 	bridgeUnderTest := testBridge()
-	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request))
+	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request), nil)
 	var delta openai.CustomToolCallInputDeltaEvent
 	for _, event := range converted {
 		if event.Event == "response.custom_tool_call_input.delta" {
@@ -236,7 +276,7 @@ func TestConvertStreamEventsBuildsApplyPatchGrammarFromProxyOperations(t *testin
 	}
 
 	bridgeUnderTest := testBridge()
-	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request))
+	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request), nil)
 	completed := streamLifecycleResponse(t, converted, "response.completed")
 	want := "*** Begin Patch\n*** Add File: docs/api.md\n+# API\n+content\n*** End Patch"
 	if completed.Output[0].Input != want {
@@ -271,7 +311,7 @@ func TestConvertStreamEventsBuildsApplyPatchGrammarFromSplitAddFileTool(t *testi
 	}
 
 	bridgeUnderTest := testBridge()
-	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request))
+	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request), nil)
 	completed := streamLifecycleResponse(t, converted, "response.completed")
 	if completed.Output[0].Name != "apply_patch" {
 		t.Fatalf("output tool name = %q", completed.Output[0].Name)
@@ -310,7 +350,7 @@ func TestConvertStreamEventsBuildsApplyPatchReplacementFromUpdateContent(t *test
 	}
 
 	bridgeUnderTest := testBridge()
-	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request))
+	converted := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridgeUnderTest.ConversionContext(request), nil)
 	completed := streamLifecycleResponse(t, converted, "response.completed")
 	want := "*** Begin Patch\n*** Delete File: internal/app/app.go\n*** Add File: internal/app/app.go\n+package app\n+\n+const Name = \"Moon Bridge\"\n*** End Patch"
 	if completed.Output[0].Input != want {
@@ -516,12 +556,15 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 		{Type: "content_block_stop", Index: 0},
 		{Type: "content_block_start", Index: 1, ContentBlock: &anthropic.ContentBlock{Type: "tool_use", ID: "call_ls", Name: "exec_command", Input: json.RawMessage(`{}`)}},
 		{Type: "content_block_delta", Index: 1, Delta: anthropic.StreamDelta{Type: "input_json_delta", PartialJSON: `{"cmd":"ls"}`}},
+		{Type: "message_stop"},
 		{Type: "content_block_stop", Index: 1},
 		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
-		{Type: "message_stop"},
 	}
+	
 
-	convertedEvents := bridgeUnderTest.ConvertStreamEvents(events, "gpt-test")
+
+	sess := session.New()
+	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess)
 	completed := streamLifecycleResponse(t, convertedEvents, "response.completed")
 	if len(completed.Output) != 1 || completed.Output[0].Type != "function_call" {
 		t.Fatalf("completed output = %+v", completed.Output)
@@ -535,9 +578,9 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 			{"call_id":"call_ls","output":"README.md\n","type":"function_call_output"}
 		]`),
 	}
-	converted, _, err := bridgeUnderTest.ToAnthropic(followup)
+	converted, _, err := bridgeUnderTest.ToAnthropic(followup, sess)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	if len(converted.Messages) != 3 {
 		t.Fatalf("messages = %+v", converted.Messages)
@@ -561,9 +604,9 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 			{"call_id":"call_pwd","output":"/repo\n","type":"function_call_output"}
 		]`),
 	}
-	convertedMissing, _, err := bridgeUnderTest.ToAnthropic(missingCacheFollowup)
+	convertedMissing, _, err := bridgeUnderTest.ToAnthropic(missingCacheFollowup, sess)
 	if err != nil {
-		t.Fatalf("ToAnthropic() missing cache error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) missing cache error = %v", err)
 	}
 	if got := convertedMissing.Messages[1].Content[0].Type; got == "thinking" {
 		t.Fatalf("unexpected thinking injection for uncached tool call: %+v", convertedMissing.Messages[1].Content)
@@ -590,9 +633,12 @@ func TestDeepSeekSignatureOnlyThinkingIsReinjectedForToolCalls(t *testing.T) {
 		{Type: "content_block_stop", Index: 1},
 		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
 		{Type: "message_stop"},
-	}
 
-	convertedEvents := bridgeUnderTest.ConvertStreamEvents(events, "gpt-test")
+	}
+	
+	sess := session.New()
+	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess)
+
 	completed := streamLifecycleResponse(t, convertedEvents, "response.completed")
 	if len(completed.Output) != 1 || completed.Output[0].Type != "function_call" {
 		t.Fatalf("completed output = %+v", completed.Output)
@@ -606,9 +652,9 @@ func TestDeepSeekSignatureOnlyThinkingIsReinjectedForToolCalls(t *testing.T) {
 			{"call_id":"call_ls","output":"README.md\n","type":"function_call_output"}
 		]`),
 	}
-	converted, _, err := bridgeUnderTest.ToAnthropic(followup)
+	converted, _, err := bridgeUnderTest.ToAnthropic(followup, sess)
 	if err != nil {
-		t.Fatalf("ToAnthropic() error = %v", err)
+		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
 	assistant := converted.Messages[1]
 	if len(assistant.Content) != 2 {
@@ -648,8 +694,10 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "end_turn"}},
 		{Type: "message_stop"},
 	}
-	bridgeUnderTest.ConvertStreamEvents(events, "gpt-test")
-
+	
+	
+	sess := session.New()
+	bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess)
 	followup := openai.ResponsesRequest{
 		Model: "gpt-test",
 		Input: json.RawMessage(`[
@@ -660,7 +708,7 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 			{"role":"user","content":[{"type":"input_text","text":"update docs"}],"type":"message"}
 		]`),
 	}
-	converted, _, err := bridgeUnderTest.ToAnthropic(followup)
+	converted, _, err := bridgeUnderTest.ToAnthropic(followup, sess)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -683,7 +731,7 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 			{"role":"user","content":[{"type":"input_text","text":"continue"}],"type":"message"}
 		]`),
 	}
-	convertedNoTool, _, err := bridgeUnderTest.ToAnthropic(noToolHistory)
+	convertedNoTool, _, err := bridgeUnderTest.ToAnthropic(noToolHistory, sess)
 	if err != nil {
 		t.Fatalf("ToAnthropic() no tool history error = %v", err)
 	}

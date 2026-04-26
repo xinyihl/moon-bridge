@@ -14,16 +14,17 @@ import (
 	deepseekv4 "moonbridge/internal/extensions/deepseek_v4"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
+	"moonbridge/internal/session"
 )
 
 type Bridge struct {
 	cfg      config.Config
 	registry *cache.MemoryRegistry
-	deepseek *deepseekv4.State
 }
 
 type ConversionContext struct {
-	CustomTools map[string]CustomToolSpec
+	CustomTools   map[string]CustomToolSpec
+	FunctionTools map[string]FunctionToolSpec
 }
 
 type CustomToolSpec struct {
@@ -31,6 +32,11 @@ type CustomToolSpec struct {
 	Kind              CustomToolKind
 	OpenAIName        string
 	ApplyPatchAction  string
+}
+
+type FunctionToolSpec struct {
+	Namespace string
+	Name      string
 }
 
 type CustomToolKind string
@@ -107,6 +113,24 @@ func (context ConversionContext) NormalizeCustomToolInput(name string, input str
 	return input
 }
 
+func (context ConversionContext) OpenAIFunctionToolName(name string) (string, string) {
+	spec, ok := context.FunctionTools[name]
+	if !ok {
+		return name, ""
+	}
+	return spec.Name, spec.Namespace
+}
+
+func (context ConversionContext) AnthropicFunctionToolName(namespace string, name string) string {
+	if namespace == "" {
+		return name
+	}
+	if strings.HasPrefix(name, namespace) {
+		return name
+	}
+	return namespacedToolName(namespace, name)
+}
+
 type RequestError struct {
 	Status  int
 	Message string
@@ -122,14 +146,12 @@ func New(cfg config.Config, registry *cache.MemoryRegistry) *Bridge {
 	if registry == nil {
 		registry = cache.NewMemoryRegistry()
 	}
-	var deepseek *deepseekv4.State
-	if cfg.DeepSeekV4Enabled() {
-		deepseek = deepseekv4.NewState()
-	}
-	return &Bridge{cfg: cfg, registry: registry, deepseek: deepseek}
+	return &Bridge{cfg: cfg, registry: registry}
 }
 
-func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest) (anthropic.MessageRequest, cache.CacheCreationPlan, error) {
+// ToAnthropic converts an OpenAI Responses request to an Anthropic MessageRequest.
+// Takes an optional session for per-request state (DeepSeek thinking cache).
+func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session.Session) (anthropic.MessageRequest, cache.CacheCreationPlan, error) {
 	log := logger.L().With("model", request.Model)
 	log.Debug("converting OpenAI request to Anthropic")
 	if request.Model == "" {
@@ -138,7 +160,7 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest) (anthropic.Me
 	}
 
 	conversionContext := bridge.ConversionContext(request)
-	messages, system, err := bridge.convertInput(request.Input, conversionContext)
+	messages, system, err := bridge.convertInput(request.Input, conversionContext, sess)
 	if err != nil {
 		return anthropic.MessageRequest{}, cache.CacheCreationPlan{}, err
 	}
@@ -183,7 +205,7 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest) (anthropic.Me
 		Metadata:      request.Metadata,
 	}
 
-	if bridge.cfg.DeepSeekV4Enabled() {
+	if bridge.cfg.DeepSeekV4Enabled() && sess != nil && sess.DeepSeek != nil {
 		deepseekv4.ToAnthropicRequest(&converted, request.Reasoning)
 	}
 
@@ -203,14 +225,14 @@ func (bridge *Bridge) FromAnthropic(response anthropic.MessageResponse, model st
 }
 
 func (bridge *Bridge) FromAnthropicWithContext(response anthropic.MessageResponse, model string, context ConversionContext) openai.Response {
-	return bridge.FromAnthropicWithPlanAndContext(response, model, cache.CacheCreationPlan{}, context)
+	return bridge.FromAnthropicWithPlanAndContext(response, model, cache.CacheCreationPlan{}, context, nil)
 }
 
 func (bridge *Bridge) FromAnthropicWithPlan(response anthropic.MessageResponse, model string, plan cache.CacheCreationPlan) openai.Response {
-	return bridge.FromAnthropicWithPlanAndContext(response, model, plan, ConversionContext{})
+	return bridge.FromAnthropicWithPlanAndContext(response, model, plan, ConversionContext{}, nil)
 }
 
-func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.MessageResponse, model string, plan cache.CacheCreationPlan, context ConversionContext) openai.Response {
+func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.MessageResponse, model string, plan cache.CacheCreationPlan, context ConversionContext, sess *session.Session) openai.Response {
 	log := logger.L().With("model", model)
 	log.Debug("converting Anthropic response to OpenAI", "provider_id", response.ID, "stop_reason", response.StopReason)
 	if plan.LocalKey != "" {
@@ -221,8 +243,8 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 		}, response.Usage.InputTokens)
 		log.Debug("updated cache registry", "key", plan.LocalKey, "input_tokens", response.Usage.InputTokens, "cache_creation", response.Usage.CacheCreationInputTokens, "cache_read", response.Usage.CacheReadInputTokens)
 	}
-	if bridge.deepseek != nil {
-		bridge.deepseek.RememberFromContent(response.Content)
+	if sess != nil && sess.DeepSeek != nil && bridge.cfg.DeepSeekV4Enabled() {
+		sess.DeepSeek.RememberFromContent(response.Content)
 	}
 
 	output := make([]openai.OutputItem, 0, len(response.Content))
@@ -273,11 +295,13 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 				})
 				continue
 			}
+			name, namespace := context.OpenAIFunctionToolName(block.Name)
 			output = append(output, openai.OutputItem{
 				Type:      "function_call",
 				ID:        "fc_" + block.ID,
 				CallID:    block.ID,
-				Name:      block.Name,
+				Name:      name,
+				Namespace: namespace,
 				Arguments: string(block.Input),
 				Status:    "completed",
 			})
@@ -354,4 +378,14 @@ func (bridge *Bridge) ErrorResponse(err error) (int, openai.ErrorResponse) {
 		Type:    "server_error",
 		Code:    "internal_error",
 	}}
+}
+
+// ProviderFor returns the provider key that serves the given model alias.
+func (bridge *Bridge) ProviderFor(modelAlias string) string {
+	if bridge.cfg.ProviderModels != nil {
+		if pm, ok := bridge.cfg.ProviderModels[modelAlias]; ok && pm.Provider != "" {
+			return pm.Provider
+		}
+	}
+	return "default"
 }

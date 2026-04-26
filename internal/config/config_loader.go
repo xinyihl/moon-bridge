@@ -26,15 +26,16 @@ type ServerFileConfig struct {
 }
 
 type ProviderFileConfig struct {
-	BaseURL          string                             `yaml:"base_url"`
-	APIKey           string                             `yaml:"api_key"`
-	Version          string                             `yaml:"version"`
-	UserAgent        string                             `yaml:"user_agent"`
-	WebSearch        WebSearchFileConfig                `yaml:"web_search"`
-	DefaultMaxTokens int                                `yaml:"default_max_tokens"`
-	DefaultModel     string                             `yaml:"default_model"`
-	Models           map[string]ProviderModelFileConfig `yaml:"models"`
-	DeepSeekV4       bool                               `yaml:"deepseek_v4"`
+	BaseURL          string                              `yaml:"base_url"`
+	APIKey           string                              `yaml:"api_key"`
+	Version          string                              `yaml:"version"`
+	UserAgent        string                              `yaml:"user_agent"`
+	WebSearch        WebSearchFileConfig                 `yaml:"web_search"`
+	DefaultMaxTokens int                                 `yaml:"default_max_tokens"`
+	DefaultModel     string                              `yaml:"default_model"`
+	Providers        map[string]ProviderDefFileConfig    `yaml:"providers"`
+	Models           map[string]ProviderModelFileConfig  `yaml:"models"`
+	DeepSeekV4       bool                                `yaml:"deepseek_v4"`
 }
 
 type CacheFileConfig struct {
@@ -52,9 +53,17 @@ type CacheFileConfig struct {
 
 type ProviderModelFileConfig struct {
 	Name            string                 `yaml:"name"`
+	Provider        string                 `yaml:"provider"`
 	ContextWindow   int                    `yaml:"context_window"`
 	MaxOutputTokens int                    `yaml:"max_output_tokens"`
 	Pricing         ModelPricingFileConfig `yaml:"pricing"`
+}
+
+type ProviderDefFileConfig struct {
+	BaseURL   string `yaml:"base_url"`
+	APIKey    string `yaml:"api_key"`
+	Version   string `yaml:"version"`
+	UserAgent string `yaml:"user_agent"`
 }
 
 // ModelPricingFileConfig holds optional per-model pricing in RMB per M tokens.
@@ -133,7 +142,24 @@ func FromFileConfig(fileConfig FileConfig) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	providerDefs := fromProviderDefFileConfig(fileConfig.Provider.Providers)
 	providerModels := FromProviderModelFileConfig(fileConfig.Provider.Models)
+
+	// If multi-provider is configured, legacy fields aren't required for Transform.
+	// But we still set ProviderBaseURL/ProviderAPIKey for backward compat with
+	// Capture modes that rely on them.
+	legacyBaseURL := strings.TrimRight(strings.TrimSpace(fileConfig.Provider.BaseURL), "/")
+	legacyAPIKey := strings.TrimSpace(fileConfig.Provider.APIKey)
+	legacyVersion := valueOrDefault(strings.TrimSpace(fileConfig.Provider.Version), "2023-06-01")
+	legacyUserAgent := strings.TrimSpace(fileConfig.Provider.UserAgent)
+
+	// If multi-provider is defined, use those as the primary source.
+	// Otherwise fall through with legacy fields.
+	if len(providerDefs) == 0 {
+		// No multi-provider config: legacy mode.
+		// Use providerDefs populated from legacy fields below.
+	}
+
 	cfg := Config{
 		Mode:              mode,
 		Addr:              valueOrDefault(strings.TrimSpace(fileConfig.Server.Addr), DefaultAddr),
@@ -142,10 +168,10 @@ func FromFileConfig(fileConfig FileConfig) (Config, error) {
 		LogFormat:         valueOrDefault(strings.TrimSpace(fileConfig.Log.Format), "text"),
 		SystemPrompt:      strings.TrimSpace(fileConfig.SystemPrompt),
 		DefaultModel:      strings.TrimSpace(fileConfig.Provider.DefaultModel),
-		ProviderBaseURL:   strings.TrimRight(strings.TrimSpace(fileConfig.Provider.BaseURL), "/"),
-		ProviderAPIKey:    strings.TrimSpace(fileConfig.Provider.APIKey),
-		ProviderVersion:   valueOrDefault(strings.TrimSpace(fileConfig.Provider.Version), "2023-06-01"),
-		ProviderUserAgent: strings.TrimSpace(fileConfig.Provider.UserAgent),
+		ProviderBaseURL:   legacyBaseURL,
+		ProviderAPIKey:    legacyAPIKey,
+		ProviderVersion:   legacyVersion,
+		ProviderUserAgent: legacyUserAgent,
 		WebSearchSupport:  webSearchSupport,
 		WebSearchMaxUses:  intOrDefault(fileConfig.Provider.WebSearch.MaxUses, 8),
 		TavilyAPIKey:      strings.TrimSpace(fileConfig.Provider.WebSearch.TavilyAPIKey),
@@ -154,10 +180,27 @@ func FromFileConfig(fileConfig FileConfig) (Config, error) {
 		DefaultMaxTokens:  intOrDefault(fileConfig.Provider.DefaultMaxTokens, 1024),
 		ModelMap:          providerModelMap(providerModels),
 		ProviderModels:    providerModels,
+		ProviderDefs:      providerDefs,
 		Cache:             fromCacheFileConfig(fileConfig.Cache),
 		ResponseProxy:     FromResponseProxyFileConfig(fileConfig.Developer.Proxy.Response),
 		DeepSeekV4:        fileConfig.Provider.DeepSeekV4,
 		AnthropicProxy:    FromAnthropicProxyFileConfig(fileConfig.Developer.Proxy.Anthropic),
+	}
+
+	// In multi-provider mode, derive ProviderBaseURL/ProviderAPIKey from the
+	// configured providers for backward-compatible lookup.
+	if len(cfg.ProviderDefs) > 0 {
+		if def, ok := cfg.ProviderDefs["default"]; ok && def.BaseURL != "" {
+			cfg.ProviderBaseURL = def.BaseURL
+			cfg.ProviderAPIKey = def.APIKey
+			cfg.ProviderVersion = def.Version
+		} else if len(cfg.ProviderDefs) == 1 {
+			for _, def := range cfg.ProviderDefs {
+				cfg.ProviderBaseURL = def.BaseURL
+				cfg.ProviderAPIKey = def.APIKey
+				cfg.ProviderVersion = def.Version
+			}
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -214,6 +257,7 @@ func FromProviderModelFileConfig(fileConfig map[string]ProviderModelFileConfig) 
 		}
 		models[trimmedAlias] = ProviderModelConfig{
 			Name:            strings.TrimSpace(model.Name),
+			Provider:        strings.TrimSpace(model.Provider),
 			ContextWindow:   model.ContextWindow,
 			MaxOutputTokens: model.MaxOutputTokens,
 			InputPrice:      model.Pricing.InputPrice,
@@ -223,6 +267,26 @@ func FromProviderModelFileConfig(fileConfig map[string]ProviderModelFileConfig) 
 		}
 	}
 	return models
+}
+
+func fromProviderDefFileConfig(fileConfig map[string]ProviderDefFileConfig) map[string]ProviderDef {
+	if len(fileConfig) == 0 {
+		return nil
+	}
+	defs := make(map[string]ProviderDef, len(fileConfig))
+	for key, def := range fileConfig {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		defs[trimmedKey] = ProviderDef{
+			BaseURL:   strings.TrimRight(strings.TrimSpace(def.BaseURL), "/"),
+			APIKey:    strings.TrimSpace(def.APIKey),
+			Version:   strings.TrimSpace(def.Version),
+			UserAgent: strings.TrimSpace(def.UserAgent),
+		}
+	}
+	return defs
 }
 
 func fromCacheFileConfig(fileConfig CacheFileConfig) CacheConfig {

@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"moonbridge/internal/anthropic"
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/extensions/websearchinjected"
 	"moonbridge/internal/config"
 	"moonbridge/internal/logger"
+	"moonbridge/internal/provider"
 	"moonbridge/internal/proxy"
 	"moonbridge/internal/server"
 	"moonbridge/internal/stats"
@@ -55,13 +55,21 @@ func RunServer(ctx context.Context, cfg config.Config, errors io.Writer) error {
 }
 
 func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) error {
-	anthropicClient := anthropic.NewClient(anthropic.ClientConfig{
-		BaseURL:   cfg.ProviderBaseURL,
-		APIKey:    cfg.ProviderAPIKey,
-		Version:   cfg.ProviderVersion,
-		UserAgent: cfg.ProviderUserAgent,
-	})
-	cfg = resolveWebSearchSupport(ctx, cfg, anthropicClient, errors)
+	// Build multi-provider infrastructure.
+	providerDefs := buildProviderDefsFromConfig(cfg)
+	modelRoutes := buildModelRoutesFromConfig(cfg)
+	providerMgr, err := provider.NewProviderManager(providerDefs, modelRoutes)
+	if err != nil {
+		return fmt.Errorf("init provider manager: %w", err)
+	}
+
+	// Use the default provider client for web search probing and fallback.
+	defaultClient, err := providerMgr.ClientForKey(providerMgr.DefaultKey())
+	if err != nil {
+		return fmt.Errorf("default provider not available: %w", err)
+	}
+	cfg = resolveWebSearchSupport(ctx, cfg, defaultClient, errors)
+
 	sessionStats := stats.NewSessionStats()
 	// Set per-model pricing if configured
 	pricing := make(map[string]stats.ModelPricing)
@@ -83,21 +91,69 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 		Root:    transformTraceRoot(),
 	})
 	logTrace(errors, "transform", tracer)
-	// Wrap provider with injected search orchestrator extension when configured.
-	var provider server.Provider = anthropicClientWrapper{client: anthropicClient}
+
+	// Determine the default provider to use as the fallback Provider.
+	// *anthropic.Client directly implements server.Provider.
+	var fallbackProvider server.Provider = defaultClient
+
+	// Wrap with injected search orchestrator when configured.
 	if websearchinjected.IsEnabled(cfg) {
-		provider = websearchinjected.WrapProvider(anthropicClient, cfg.TavilyAPIKey, cfg.FirecrawlAPIKey, cfg.SearchMaxRounds)
+		orchestrator := websearchinjected.WrapProvider(defaultClient, cfg.TavilyAPIKey, cfg.FirecrawlAPIKey, cfg.SearchMaxRounds)
+		// *websearch.Orchestrator also implements server.Provider.
+		fallbackProvider = orchestrator
 		logger.Info("injected web search enabled", "tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "")
 	}
+
 	handler := server.New(server.Config{
 		Bridge:      bridge.New(cfg, cache.NewMemoryRegistry()),
-		Provider:    provider,
+		Provider:    fallbackProvider,
+		ProviderMgr: providerMgr,
 		Tracer:      tracer,
 		TraceErrors: errors,
 		Stats:       sessionStats,
 	})
 
 	return runHTTPServer(ctx, cfg.Addr, handler, errors, sessionStats)
+}
+
+// buildProviderDefsFromConfig converts config into provider definition map.
+func buildProviderDefsFromConfig(cfg config.Config) map[string]provider.ProviderConfig {
+	if len(cfg.ProviderDefs) > 0 {
+		defs := make(map[string]provider.ProviderConfig, len(cfg.ProviderDefs))
+		for key, def := range cfg.ProviderDefs {
+			defs[key] = provider.ProviderConfig{
+				BaseURL:   def.BaseURL,
+				APIKey:    def.APIKey,
+				Version:   def.Version,
+				UserAgent: def.UserAgent,
+			}
+		}
+		return defs
+	}
+	// Legacy single-provider mode.
+	return provider.BuildProviderConfigs(
+		cfg.ProviderBaseURL,
+		cfg.ProviderAPIKey,
+		cfg.ProviderVersion,
+		cfg.ProviderUserAgent,
+		nil,
+	)
+}
+
+// buildModelRoutesFromConfig converts config model entries into route definitions.
+func buildModelRoutesFromConfig(cfg config.Config) map[string]provider.ModelRoute {
+	routes := make(map[string]provider.ModelRoute, len(cfg.ProviderModels))
+	for alias, pm := range cfg.ProviderModels {
+		providerKey := pm.Provider
+		if providerKey == "" {
+			providerKey = "default"
+		}
+		routes[alias] = provider.ModelRoute{
+			Provider: providerKey,
+			Name:     pm.Name,
+		}
+	}
+	return routes
 }
 
 type webSearchProber interface {
@@ -231,16 +287,4 @@ func runHTTPServer(ctx context.Context, addr string, handler http.Handler, error
 		logger.Error("http server error", "error", err)
 		return err
 	}
-}
-
-type anthropicClientWrapper struct {
-	client *anthropic.Client
-}
-
-func (wrapper anthropicClientWrapper) CreateMessage(ctx context.Context, request anthropic.MessageRequest) (anthropic.MessageResponse, error) {
-	return wrapper.client.CreateMessage(ctx, request)
-}
-
-func (wrapper anthropicClientWrapper) StreamMessage(ctx context.Context, request anthropic.MessageRequest) (anthropic.Stream, error) {
-	return wrapper.client.StreamMessage(ctx, request)
 }

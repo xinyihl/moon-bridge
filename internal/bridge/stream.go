@@ -6,13 +6,14 @@ import (
 	"moonbridge/internal/anthropic"
 	deepseekv4 "moonbridge/internal/extensions/deepseek_v4"
 	"moonbridge/internal/openai"
+	"moonbridge/internal/session"
 )
 
 func (bridge *Bridge) ConvertStreamEvents(events []anthropic.StreamEvent, model string) []openai.StreamEvent {
-	return bridge.ConvertStreamEventsWithContext(events, model, ConversionContext{})
+	return bridge.ConvertStreamEventsWithContext(events, model, ConversionContext{}, nil)
 }
 
-func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEvent, model string, context ConversionContext) []openai.StreamEvent {
+func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEvent, model string, context ConversionContext, sess *session.Session) []openai.StreamEvent {
 	converter := streamConverter{
 		bridge:                  bridge,
 		model:                   model,
@@ -27,13 +28,19 @@ func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEv
 		itemIDs:                 map[int]string{},
 		outputIndexes:           map[int]int{},
 	}
-	if bridge.deepseek != nil {
+	if bridge.cfg.DeepSeekV4Enabled() && sess != nil && sess.DeepSeek != nil {
 		converter.deepseek = deepseekv4.NewStreamState()
 	}
 	var converted []openai.StreamEvent
 	for _, event := range events {
 		converted = append(converted, converter.convert(event)...)
 	}
+	
+	// After stream completes, feed the result back to the session's DeepSeek state.
+	if converter.deepseek != nil && sess != nil && sess.DeepSeek != nil && bridge.cfg.DeepSeekV4Enabled() {
+		sess.DeepSeek.RememberStreamResult(converter.deepseek, converter.response.OutputText)
+	}
+	
 	return converted
 }
 
@@ -83,9 +90,6 @@ func (converter *streamConverter) convert(event anthropic.StreamEvent) []openai.
 			converter.response.Usage = normalizeUsage(*event.Usage)
 		}
 	case "message_stop":
-		if converter.bridge.deepseek != nil {
-			converter.bridge.deepseek.RememberStreamResult(converter.deepseek, converter.response.OutputText)
-		}
 		if converter.response.Status == "" || converter.response.Status == "in_progress" {
 			converter.response.Status = "completed"
 		}

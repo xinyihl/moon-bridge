@@ -91,7 +91,7 @@ internal/e2e           真实提供商端到端测试
 | `exec`（代码模式） | `{source: string}` | `source` 字段作为原始自定义工具输入返回。 |
 | 其他 custom / freeform | `{input: string}` | 从 `input` 字段提取原始输入字符串。 |
 
-`namespace` 工具在 Anthropic 侧被展平为 `namespace__tool` 命名。在响应侧，`custom_tool_call` 条目随 `response.custom_tool_call_input.delta` 流式事件发出。
+`namespace` 工具在 Anthropic 侧被展平为 `namespace__tool` 命名。响应回 Codex 时，function 工具会按本轮请求映射拆回 `namespace` + 子工具 `name`，避免 MCP 调用被 Codex 当成未知扁平函数；`custom_tool_call` 条目随 `response.custom_tool_call_input.delta` 流式事件发出。
 
 ### Web Search 桥接
 
@@ -224,7 +224,7 @@ openai.usage.input_tokens_details.cached_tokens =
 | `{type:"function", name, description, parameters}` | `{name, description, input_schema}` | `parameters` 必须是 JSON Schema 对象。 |
 | `{type:"local_shell"}` | `{name:"local_shell", ...}` | Codex `local_shell_call` ↔ `tool_use`。包含 command、working_directory、timeout_ms、env。 |
 | `{type:"custom"}` 带 grammar | 按 grammar 类型划分的结构化 JSON schema | `apply_patch` → add/delete/update/replace/batch 工具集合；`exec` → source 字符串。 |
-| `namespace` | 展平为 `namespace__tool` | 子 function/custom 带命名空间前缀展开。 |
+| `namespace` | 展平为 `namespace__tool` | 子 function/custom 带命名空间前缀展开；function 响应回 Codex 时拆回 `namespace` + 子工具 `name`。 |
 | `web_search_preview` | `{type:"web_search_20250305"}` 或跳过 | 最大使用次数和是否注入来自 `provider.web_search` 配置/探测。 |
 | `file_search`、`computer_use_preview`、`image_generation` | 跳过 | 在工具声明中静默忽略。 |
 
@@ -235,7 +235,7 @@ Anthropic `tool_use` → OpenAI 响应条目：
 | Anthropic | OpenAI |
 | --- | --- |
 | `text` 块 | `output[].type="message"`，带 `output_text` 内容部分 |
-| `tool_use`（function） | `output[].type="function_call"`，带 `call_id`、`name`、`arguments`、`status` |
+| `tool_use`（function） | `output[].type="function_call"`，带 `call_id`、`name`、`arguments`、`status`；若来自 namespace 工具则额外带 `namespace` |
 | `tool_use`（local_shell） | `output[].type="local_shell_call"`，带结构化 `action` |
 | `tool_use`（custom） | `output[].type="custom_tool_call"`，带 grammar 重建的 `input` |
 | `server_tool_use:web_search` | `output[].type="web_search_call"`，带 `action`（空时过滤） |
