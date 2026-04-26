@@ -64,6 +64,7 @@ type OutputItem struct {
 	Arguments string        `json:"arguments,omitempty"`
 	Input     string        `json:"input,omitempty"`
 	Action    *ToolAction   `json:"action,omitempty"`
+	Summary   []ReasoningItemSummary `json:"summary,omitempty"`
 }
 
 type ToolAction struct {
@@ -177,4 +178,9 @@ type CustomToolCallInputDeltaEvent struct {
 	CallID         string `json:"call_id,omitempty"`
 	OutputIndex    int    `json:"output_index"`
 	Delta          string `json:"delta"`
+}
+
+type ReasoningItemSummary struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }

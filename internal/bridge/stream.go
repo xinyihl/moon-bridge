@@ -59,6 +59,8 @@ type streamConverter struct {
 	webSearchActions        map[int]*openai.ToolAction
 	webSearchInputs         map[int]string
 	deepseek                *deepseekv4.StreamState
+	pendingReasoningText    string
+	hasToolCalls            bool
 	itemIDs                 map[int]string
 	outputIndexes           map[int]int
 }
@@ -101,6 +103,21 @@ func (converter *streamConverter) convert(event anthropic.StreamEvent) []openai.
 	case "message_stop":
 		if converter.response.Status == "" || converter.response.Status == "in_progress" {
 			converter.response.Status = "completed"
+		}
+		// Prepend reasoning item for DeepSeek thinking when tool calls were made.
+		if converter.deepseek != nil && converter.pendingReasoningText != "" && converter.hasToolCalls {
+			reasoningItem := openai.OutputItem{
+				Type: "reasoning",
+				Summary: []openai.ReasoningItemSummary{{
+					Type: "summary_text",
+					Text: converter.pendingReasoningText,
+				}},
+			}
+			converter.response.Output = append([]openai.OutputItem{reasoningItem}, converter.response.Output...)
+			// Shift all output indexes since we prepended a reasoning item.
+			for k, v := range converter.outputIndexes {
+				converter.outputIndexes[k] = v + 1
+			}
 		}
 		if converter.response.Status == "incomplete" {
 			return []openai.StreamEvent{converter.lifecycle("response.incomplete")}

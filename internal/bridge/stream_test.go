@@ -611,14 +611,23 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 	sess := session.New()
 	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess)
 	completed := streamLifecycleResponse(t, convertedEvents, "response.completed")
-	if len(completed.Output) != 1 || completed.Output[0].Type != "function_call" {
+	// Reasoning item should be emitted alongside the tool call.
+	if len(completed.Output) != 2 {
 		t.Fatalf("completed output = %+v", completed.Output)
 	}
+	if completed.Output[0].Type != "reasoning" || len(completed.Output[0].Summary) != 1 || completed.Output[0].Summary[0].Text != "inspect before listing" {
+		t.Fatalf("reasoning item = %+v", completed.Output[0])
+	}
+	if completed.Output[1].Type != "function_call" || completed.Output[1].CallID != "call_ls" {
+		t.Fatalf("function call = %+v", completed.Output[1])
+	}
 
+	// Follow-up request includes the reasoning item as Codex would replay it.
 	followup := openai.ResponsesRequest{
 		Model: "gpt-test",
 		Input: json.RawMessage(`[
 			{"role":"user","content":[{"type":"input_text","text":"inspect"}],"type":"message"},
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"inspect before listing"}]},
 			{"arguments":"{\"cmd\":\"ls\"}","call_id":"call_ls","name":"exec_command","type":"function_call"},
 			{"call_id":"call_ls","output":"README.md\n","type":"function_call_output"}
 		]`),
@@ -634,7 +643,7 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 	if len(assistant.Content) != 2 {
 		t.Fatalf("assistant content = %+v", assistant.Content)
 	}
-	if assistant.Content[0].Type != "thinking" || assistant.Content[0].Thinking != "inspect before listing" || assistant.Content[0].Signature != "sig_1" {
+	if assistant.Content[0].Type != "thinking" || assistant.Content[0].Thinking != "inspect before listing" {
 		t.Fatalf("thinking block = %+v", assistant.Content[0])
 	}
 	if assistant.Content[1].Type != "tool_use" || assistant.Content[1].ID != "call_ls" {
@@ -684,10 +693,12 @@ func TestDeepSeekSignatureOnlyThinkingIsReinjectedForToolCalls(t *testing.T) {
 	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess)
 
 	completed := streamLifecycleResponse(t, convertedEvents, "response.completed")
+	// Signature-only thinking has empty text, so no reasoning item should be emitted.
 	if len(completed.Output) != 1 || completed.Output[0].Type != "function_call" {
 		t.Fatalf("completed output = %+v", completed.Output)
 	}
 
+	// Session-based follow-up (no reasoning item in input — tests session state).
 	followup := openai.ResponsesRequest{
 		Model: "gpt-test",
 		Input: json.RawMessage(`[

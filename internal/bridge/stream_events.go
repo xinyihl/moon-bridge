@@ -25,6 +25,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 		converter.contentText[index] = ""
 		return nil
 	case "tool_use":
+		converter.hasToolCalls = true
 		if block.Name == "local_shell" {
 			item := openai.OutputItem{
 				Type:   "local_shell_call",
@@ -161,6 +162,7 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) []openai.StreamEvent {
 	index := event.Index
 	if converter.deepseek != nil && converter.deepseek.Stop(index) {
+		converter.pendingReasoningText = converter.deepseek.CompletedThinkingText()
 		return nil
 	}
 	if text, ok := converter.contentText[index]; ok {

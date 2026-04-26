@@ -28,7 +28,52 @@ provider:
     moonbridge: "deepseek/deepseek-v4-pro"
 ```
 
-开启后，Moon Bridge 只会对路由到该 Provider 的 Transform 请求启用 DeepSeek 兼容逻辑。其他 Provider 的请求不会剥离 reasoning_content、注入 thinking，也不会移除 temperature / top_p。
+开启后，Moon Bridge 只对路由到该 Provider 的 Transform 请求启用 DeepSeek 兼容逻辑。其他 Provider 的请求不会剥离 reasoning_content、注入 thinking，也不会移除 temperature / top_p。
+
+## Thinking 跨轮回放
+
+DeepSeek 的 thinking 模式要求在有多轮工具调用的对话中，必须把前一轮的 thinking 内容重新传入后续请求。Moon Bridge 通过以下机制实现：
+
+### 响应侧（Anthropic → OpenAI）
+
+当 DeepSeek 返回 `content[].thinking` block 且该次响应包含工具调用时，Moon Bridge 会将 thinking 文本放入一个 `type: "reasoning"` 的 OpenAI Responses output item 中：
+
+```json
+{
+  "type": "reasoning",
+  "summary": [{"type": "summary_text", "text": "模型推理内容"}]
+}
+```
+
+如果该次响应没有工具调用，thinking 内容会被直接丢弃（DeepSeek 文档说明无工具调用的轮次不需要回传 reasoning）。
+
+### 请求侧（OpenAI → Anthropic）
+
+当 Codex 在后续请求的 `input` 数组中回传了 `type: "reasoning"` item 时，Moon Bridge 会提取 `summary[0].text` 并将其重构为 Anthropic 格式的 `content[].thinking` block，注入到对应的 assistant 消息前。
+
+```json
+{
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {"type": "thinking", "thinking": "模型推理内容"},
+    {"type": "text", "text": "最终回答"},
+    {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
+  ]
+}
+```
+
+### 为什么用 summary 字段
+
+`type: "reasoning"` output item 的 `summary` 字段是 OpenAI Responses API 的标准字段。Codex 的 `ContextManager` 会自动记录并回放所有 `ResponseItem`，包括 `type: "reasoning"`。这确保了 thinking 内容可以跨 HTTP 请求持久化，而不依赖 Moon Bridge 的内存状态。
+
+### 仅回放必要内容
+
+根据 DeepSeek 官方文档：
+- **无工具调用的轮次**：`reasoning_content` 不需要回传（API 会忽略）
+- **有工具调用的轮次**：`reasoning_content` 必须完整回传（缺少则 400 错误）
+
+Moon Bridge 只在响应包含工具调用时才生成 `type: "reasoning"` item，避免在上下文中携带不必要的推理内容。
 
 ## 功能详解
 
@@ -38,19 +83,9 @@ provider:
 
 这样 DeepSeek 不会因为收到非法字段而返回 400。
 
-### 2. Thinking 状态与重注入
+### 2. reasoning_effort 映射
 
-当前代码在每个 HTTP 请求开始时创建独立 `Session`，并在 Session 内维护 `State`。这样可以避免并发请求之间的 thinking 内容互相污染。`State` 能在同一请求的转换流程中记录：
-
-- **工具调用关联**：模型在调用工具前产生的 thinking 内容，按 `tool_call_id` 索引；后续转换如果在历史 input 中看到同一 `tool_use` id，会在对应的 `assistant` 消息前注入已缓存的 thinking block。
-- **纯文本关联**：模型在产生文本输出前产生的 thinking 内容，按文本 hash 索引；后续转换如果看到同一段 assistant 文本，会在该消息前注入已缓存的 thinking block。
-- **容量控制**：记忆上限 1024 条，超出后按 FIFO 淘汰最旧记录。
-
-需要注意：这个状态是请求级的，不是全局会话持久化存储；HTTP 请求结束后不会跨请求保存 thinking 缓存。跨轮对话仍依赖客户端把必要历史发回 Moon Bridge。
-
-### 3. reasoning_effort 映射
-
-当 Codex 等 OpenAl 客户端在请求中传入 `reasoning`（如 `{"effort": "high"}`），扩展会：
+当 Codex 等 OpenAI 客户端在请求中传入 `reasoning`（如 `{"effort": "high"}`），扩展会：
 
 | OpenAI effort | DeepSeek thinking level | budget_tokens |
 |---------------|------------------------|---------------|
@@ -59,13 +94,9 @@ provider:
 
 同时移除 `temperature` 和 `top_p` 字段。
 
-### 4. Reasoning 输出处理
+### 3. 流式处理
 
-DeepSeek 返回的 `thinking` 或 `reasoning_content` 块不会作为普通 `output_text` 返回给 OpenAI Responses 客户端；转换层会跳过这些块，避免把 Provider 专用字段回传进后续输入导致上游报错。流式路径会识别 thinking delta 并记录到请求级 `State`，供同一请求内的工具链转换逻辑使用。
-
-### 5. 流式处理
-
-流式模式下，扩展通过 `StreamState` 逐事件收集 `thinking_delta` / `reasoning_content_delta` / `signature_delta`，在 thinking block 结束时将其汇入当前请求的 `State`。若上游只返回 `signature_delta` 而没有 thinking 文本，扩展也会缓存一个空文本的 `thinking` block，避免同一请求内后续工具链转换因缺少 `content[].thinking` 被拒绝。
+流式模式下，扩展通过 `StreamState` 逐事件收集 `thinking_delta` / `reasoning_content_delta` / `signature_delta`。在 `message_stop` 时，如果已收集到 thinking 内容且存在工具调用，生成 `type: "reasoning"` output item 并加入最终响应。
 
 ## 模块结构
 
@@ -73,7 +104,7 @@ DeepSeek 返回的 `thinking` 或 `reasoning_content` 块不会作为普通 `out
 internal/extensions/deepseek_v4/
 ├── deepseek_v4.go    # 核心转换函数：剥离、提取、注入、请求变异
 ├── deepseek_v4_test.go
-├── state.go          # State / StreamState：记忆管理和流式状态跟踪
+├── state.go          # State / StreamState：请求级记忆管理和流式状态跟踪
 ```
 
 ## 与 Bridge 的集成
@@ -82,15 +113,15 @@ internal/extensions/deepseek_v4/
 
 | 位置 | 操作 |
 |------|------|
-| `bridge/request.go:convertInput()` | 剥离历史 reasoning_content |
-| `bridge/request.go:convertInput()` | 为 tool_use / assistant text 注入缓存的 thinking block |
+| `bridge/bridge.go:FromAnthropicWithPlanAndContext()` | 非流式响应中收集 thinking 文本，生成 reasoning output item |
+| `bridge/stream.go:ConvertStreamEventsWithContext()` | 流式响应结束时生成 reasoning output item |
+| `bridge/request.go:convertInput()` | 解析 `type: "reasoning"` input item，重构 thinking block |
 | `bridge/bridge.go:ToAnthropic()` | 调用 `ToAnthropicRequest` 变异请求 |
-| `bridge/bridge.go:FromAnthropicWithPlanAndContext()` | 记录本轮 thinking 到请求级 State |
-| `bridge/stream.go:ConvertStreamEventsWithContext()` | 创建 StreamState；结束时汇入请求级 State |
 | `bridge/stream_events.go` | 流式事件中识别和收集 thinking delta |
 
 ## 注意事项
 
 - 扩展仅在 `mode: Transform` 且当前模型路由到的 Provider 配置了 `deepseek_v4: true` 时生效。
-- `State` 是请求级内存存储，HTTP 请求结束后丢失，不提供跨请求持久化。
-- thinking 的重注入依赖 tool_call_id 或文本 hash 匹配；如果客户端没有在下一轮带回可匹配历史，或模型对同一工具调用产生不同文本，可能匹配失败，不影响普通文本/工具调用转换。
+- Thinking 的跨轮回放依赖 Codex 在 `input` 数组中回传 `type: "reasoning"` output item。如果客户端不会回传（如非 Codex 客户端），则跨轮回放可能失败。
+- `ReasoningResponseItem` 的 `summary` 字段当前只携带 thinking 文本，不携带 signature。对于 signature-only thinking block（无文本只有签名），不会生成 reasoning item。
+- 同一 HTTP 请求内的工具链（同次响应中先 thinking 后多次 tool_use），仍使用请求级 `State` 缓存。

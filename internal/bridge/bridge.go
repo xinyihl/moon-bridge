@@ -285,10 +285,15 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 	output := make([]openai.OutputItem, 0, len(response.Content))
 	var outputText strings.Builder
 	messageContent := make([]openai.ContentPart, 0)
+	var thinkingText string
+	hasToolCalls := false
 
 	for index, block := range response.Content {
 		switch block.Type {
 		case "thinking", "reasoning_content":
+			if deepseekV4Enabled {
+				thinkingText += deepseekv4.ExtractReasoningContent([]anthropic.ContentBlock{block})
+			}
 			continue
 		case "text":
 			if deepseekV4Enabled && deepseekv4.IsReasoningContentBlock(&block) {
@@ -298,6 +303,7 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 			messageContent = append(messageContent, part)
 			outputText.WriteString(block.Text)
 		case "tool_use":
+			hasToolCalls = true
 			if len(messageContent) > 0 {
 				output = append(output, openai.OutputItem{
 					Type:    "message",
@@ -366,6 +372,20 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 		})
 	}
 
+	// Emit reasoning output item for DeepSeek thinking when tool calls were made.
+	// This carries the thinking text back to Codex via the reasoning item summary,
+	// allowing it to be replayed in subsequent requests (preventing DeepSeek 400 errors).
+	if deepseekV4Enabled && thinkingText != "" && hasToolCalls {
+		reasoningItem := openai.OutputItem{
+			Type: "reasoning",
+			Summary: []openai.ReasoningItemSummary{{
+				Type: "summary_text",
+				Text: thinkingText,
+			}},
+		}
+		output = append([]openai.OutputItem{reasoningItem}, output...)
+	}
+
 	status, incomplete := statusFromStopReason(response.StopReason)
 	usage := normalizeUsage(response.Usage)
 
@@ -412,7 +432,7 @@ func (bridge *Bridge) errorResponse(err error, deepseekV4Enabled bool) (int, ope
 	if providerError, ok := anthropic.IsProviderError(err); ok {
 		msg := providerError.Error()
 		if deepseekV4Enabled && isDeepSeekThinkingHistoryError(msg) {
-			msg = "MoonBridge does not support resuming DeepSeek thinking-mode sessions. Please start a new conversation."
+			msg = "Missing required thinking blocks - ensure reasoning items are preserved in conversation history for tool-call turns."
 		}
 		return providerError.OpenAIStatus(), openai.ErrorResponse{Error: openai.ErrorObject{
 			Message: msg,

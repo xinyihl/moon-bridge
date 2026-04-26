@@ -46,19 +46,26 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 	messages := make([]anthropic.Message, 0, len(items))
 	system := make([]anthropic.ContentBlock, 0)
 	seenToolHistory := false
+	pendingReasoningText := ""
 	for _, item := range items {
 		switch {
 		case item.Phase == "commentary":
 			continue
 		case item.Type == "reasoning":
+			if deepseekV4Enabled && len(item.Summary) > 0 {
+				pendingReasoningText = item.Summary[0].Text
+			}
 			continue
 		case item.Type == "function_call":
 			seenToolHistory = true
-			toolName := context.AnthropicFunctionToolName(item.Namespace, item.Name)
-			toolInput := toolInputFromArguments(item.Arguments)
-			if ds != nil {
+			if deepseekV4Enabled && pendingReasoningText != "" {
+				prependThinkingBlock(&messages, pendingReasoningText)
+				pendingReasoningText = ""
+			} else if ds != nil {
 				ds.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
 			}
+			toolName := context.AnthropicFunctionToolName(item.Namespace, item.Name)
+			toolInput := toolInputFromArguments(item.Arguments)
 			appendAssistantBlock(&messages, anthropic.ContentBlock{
 				Type:  "tool_use",
 				ID:    firstNonEmpty(item.CallID, item.ID),
@@ -67,15 +74,18 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			})
 		case item.Type == "custom_tool_call":
 			seenToolHistory = true
+			if deepseekV4Enabled && pendingReasoningText != "" {
+				prependThinkingBlock(&messages, pendingReasoningText)
+				pendingReasoningText = ""
+			} else if ds != nil {
+				ds.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
+			}
 			toolName := item.Name
 			toolInput := json.RawMessage(item.Arguments)
 			if strings.TrimSpace(item.Arguments) == "" {
 				toolName, toolInput = context.AnthropicToolUseForCustomTool(item.Name, item.Input)
 			} else {
 				toolInput = toolInputFromArguments(item.Arguments)
-			}
-			if ds != nil {
-				ds.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
 			}
 			appendAssistantBlock(&messages, anthropic.ContentBlock{
 				Type:  "tool_use",
@@ -85,7 +95,10 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			})
 		case item.Type == "local_shell_call":
 			seenToolHistory = true
-			if ds != nil {
+			if deepseekV4Enabled && pendingReasoningText != "" {
+				prependThinkingBlock(&messages, pendingReasoningText)
+				pendingReasoningText = ""
+			} else if ds != nil {
 				ds.PrependCachedForToolUse(&messages, firstNonEmpty(item.CallID, item.ID))
 			}
 			appendAssistantBlock(&messages, anthropic.ContentBlock{
@@ -110,7 +123,14 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			if len(blocks) == 0 || isEmptyWebSearchPreludeBlocks(blocks) {
 				continue
 			}
-			if seenToolHistory && ds != nil {
+			// Inject cached thinking block from type: "reasoning" input item.
+			if deepseekV4Enabled && pendingReasoningText != "" {
+				blocks = append([]anthropic.ContentBlock{{
+					Type:     "thinking",
+					Thinking: pendingReasoningText,
+				}}, blocks...)
+				pendingReasoningText = ""
+			} else if seenToolHistory && ds != nil {
 				blocks = ds.PrependCachedForAssistantText(blocks)
 			}
 			messages = append(messages, anthropic.Message{Role: "assistant", Content: blocks})
@@ -414,6 +434,7 @@ type inputItem struct {
 	Arguments string             `json:"arguments"`
 	Input     string             `json:"input"`
 	Action    *openai.ToolAction `json:"action"`
+	Summary   []openai.ReasoningItemSummary `json:"summary,omitempty"`
 	Output    string             `json:"output"`
 }
 
@@ -540,4 +561,25 @@ func parseStopSequences(raw json.RawMessage) []string {
 		return multiple
 	}
 	return nil
+}
+
+
+// prependThinkingBlock adds a thinking block to the last assistant message,
+// or creates a new assistant message if none exists.
+func prependThinkingBlock(messages *[]anthropic.Message, thinkingText string) {
+	if len(*messages) > 0 && (*messages)[len(*messages)-1].Role == "assistant" {
+		last := &(*messages)[len(*messages)-1]
+		last.Content = append([]anthropic.ContentBlock{{
+			Type:     "thinking",
+			Thinking: thinkingText,
+		}}, last.Content...)
+	} else {
+		*messages = append(*messages, anthropic.Message{
+			Role: "assistant",
+			Content: []anthropic.ContentBlock{{
+				Type:     "thinking",
+				Thinking: thinkingText,
+			}},
+		})
+	}
 }

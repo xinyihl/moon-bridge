@@ -164,6 +164,14 @@ func (stream *StreamState) Delta(index int, delta anthropic.StreamDelta) bool {
 	}
 }
 
+
+func (stream *StreamState) CompletedThinkingText() string {
+	if stream == nil {
+		return ""
+	}
+	return stream.completedThinking.Thinking
+}
+
 func (stream *StreamState) Stop(index int) bool {
 	if stream == nil {
 		return false
