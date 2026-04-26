@@ -73,6 +73,7 @@ func (converter *streamConverter) convert(event anthropic.StreamEvent) []openai.
 			Status: "in_progress",
 			Model:  converter.model,
 			Output: []openai.OutputItem{},
+			Usage:  normalizeUsage(event.Message.Usage),
 		}
 		return []openai.StreamEvent{
 			converter.lifecycle("response.created"),
@@ -89,7 +90,13 @@ func (converter *streamConverter) convert(event anthropic.StreamEvent) []openai.
 			converter.response.Status, converter.response.IncompleteDetails = statusFromStopReason(event.Delta.StopReason)
 		}
 		if event.Usage != nil {
-			converter.response.Usage = normalizeUsage(*event.Usage)
+			updated := normalizeUsage(*event.Usage)
+			if converter.response.Usage.InputTokens > 0 {
+				updated.InputTokens = converter.response.Usage.InputTokens
+				updated.InputTokensDetails = converter.response.Usage.InputTokensDetails
+			}
+			updated.TotalTokens = updated.InputTokens + updated.OutputTokens
+			converter.response.Usage = updated
 		}
 	case "message_stop":
 		if converter.response.Status == "" || converter.response.Status == "in_progress" {

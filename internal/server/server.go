@@ -260,7 +260,7 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 	var usage anthropic.Usage
 	for _, ev := range events {
 		switch {
-		case ev.Type == "n" && ev.Message != nil:
+		case ev.Type == "message_start" && ev.Message != nil:
 			// message_start carries cache_creation / cache_read token counts
 			usage.InputTokens = ev.Message.Usage.InputTokens
 			usage.CacheCreationInputTokens = ev.Message.Usage.CacheCreationInputTokens
