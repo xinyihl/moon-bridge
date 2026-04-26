@@ -100,6 +100,19 @@ go test ./internal/e2e/ -v -count=1
 
 在 `config.yml` 中设置 `trace_requests: true`，Anthropic 转换路径和 Capture 模式的请求/响应会写入 `trace/` 目录；OpenAI protocol 直通路径主要保留 usage 日志，错误场景会写 trace。详见 [architecture.md](architecture.md) trace 模块说明。
 
+### 回放缓存策略
+
+`scripts/replay_anthropic_cache.py` 可以回放 `trace/Transform/<session>/Anthropic/*.json`，按 Anthropic Messages prompt cache 的 `tools -> system -> messages` 前缀、`cache_control` 断点、TTL、最小 token 门槛和 lookback 规则模拟缓存读写，用于在真实请求之外先筛策略：
+
+```bash
+scripts/replay_anthropic_cache.py trace/Transform/20260426T110909Z-79bfa6d6 --compare
+scripts/replay_anthropic_cache.py trace/Transform/20260426T110909Z-79bfa6d6 --strategy observed --fit-lookback 20
+```
+
+默认会排除没有上游响应的错误 trace；需要分析失败请求对策略连续性的影响时可加 `--include-errors`。`--fit-lookback` 用已观测的 `usage` 估计当前 provider 更接近哪个有效 lookback，适合 Anthropic-compatible Provider 和官方行为存在差异时做校准。
+
+当前 `claude-opus-4-6` 兼容 Provider 在 trace `20260426T110909Z-79bfa6d6` 上的实测校准值为 `lookback_blocks=3`（命令：`--strategy observed --fit-lookback 20`）。官方 prompt cache 文档描述的自动前缀检查会向前寻找约 20 个块边界；本地策略调参时可同时跑默认 `20` 看理论上限、跑 `3` 估计当前 Provider 的保守表现。
+
 ### 测试用例编写风格
 
 使用表格驱动测试（table-driven tests）。对于协议转换的断言，优先对比整个请求/响应对象，而非逐字段断言。
