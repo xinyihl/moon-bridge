@@ -100,6 +100,99 @@ provider:
 	}
 }
 
+func TestLoadFromYAMLParsesMultiProviderProtocol(t *testing.T) {
+	cfg, err := config.LoadFromYAML([]byte(`
+mode: Transform
+provider:
+  providers:
+    deepseek:
+      base_url: https://deepseek.example.test
+      api_key: deepseek-key
+    openai:
+      base_url: https://openai.example.test
+      api_key: openai-key
+      protocol: openai
+  models:
+    moonbridge:
+      provider: deepseek
+      name: deepseek-v4-pro
+    image:
+      provider: openai
+      name: gpt-image-1.5
+`))
+	if err != nil {
+		t.Fatalf("LoadFromYAML() error = %v", err)
+	}
+	if cfg.ProviderDefs["openai"].Protocol != "openai" {
+		t.Fatalf("openai provider = %+v", cfg.ProviderDefs["openai"])
+	}
+	if got := cfg.ModelFor("image"); got != "gpt-image-1.5" {
+		t.Fatalf("ModelFor(image) = %q", got)
+	}
+}
+
+func TestLoadFromYAMLRejectsInvalidMultiProviderConfig(t *testing.T) {
+	for name, input := range map[string]string{
+		"missing provider base URL": `
+mode: Transform
+provider:
+  providers:
+    openai:
+      api_key: openai-key
+      protocol: openai
+  models:
+    image:
+      provider: openai
+      name: gpt-image-1.5
+`,
+		"unknown model provider": `
+mode: Transform
+provider:
+  providers:
+    openai:
+      base_url: https://openai.example.test
+      api_key: openai-key
+      protocol: openai
+  models:
+    image:
+      provider: missing
+      name: gpt-image-1.5
+`,
+		"invalid protocol": `
+mode: Transform
+provider:
+  providers:
+    openai:
+      base_url: https://openai.example.test
+      api_key: openai-key
+      protocol: responses
+  models:
+    image:
+      provider: openai
+      name: gpt-image-1.5
+`,
+		"empty model": `
+mode: Transform
+provider:
+  providers:
+    openai:
+      base_url: https://openai.example.test
+      api_key: openai-key
+      protocol: openai
+  models:
+    image:
+      provider: openai
+      name: ""
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := config.LoadFromYAML([]byte(input)); err == nil {
+				t.Fatal("LoadFromYAML() error = nil, want validation error")
+			}
+		})
+	}
+}
+
 func TestLoadFromYAMLRejectsInvalidWebSearchSupport(t *testing.T) {
 	_, err := config.LoadFromYAML([]byte(`
 mode: Transform

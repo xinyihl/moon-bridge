@@ -119,3 +119,30 @@ func TestResolveWebSearchSupportDisablesOnProbeInfrastructureError(t *testing.T)
 		t.Fatal("WebSearchEnabled() = true, want false when auto probe cannot prove support")
 	}
 }
+
+func TestBuildProviderDefsFromConfigKeepsMultiProviderDefinitions(t *testing.T) {
+	cfg := config.Config{
+		ProviderDefs: map[string]config.ProviderDef{
+			"deepseek": {
+				BaseURL: "https://deepseek.example.test",
+				APIKey:  "deepseek-key",
+			},
+			"openai": {
+				BaseURL:  "https://openai.example.test",
+				APIKey:   "openai-key",
+				Protocol: "openai",
+			},
+		},
+	}
+
+	defs := buildProviderDefsFromConfig(cfg)
+	if len(defs) != 2 {
+		t.Fatalf("defs = %+v", defs)
+	}
+	if defs["openai"].BaseURL != "https://openai.example.test" || defs["openai"].Protocol != "openai" {
+		t.Fatalf("openai def = %+v", defs["openai"])
+	}
+	if defs["deepseek"].BaseURL != "https://deepseek.example.test" {
+		t.Fatalf("deepseek def = %+v", defs["deepseek"])
+	}
+}

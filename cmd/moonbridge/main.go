@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"moonbridge/internal/app"
 	"moonbridge/internal/config"
@@ -73,7 +75,10 @@ func main() {
 		return
 	}
 
-	if err := app.RunServer(context.Background(), cfg, os.Stderr); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+
+	if err := app.RunServer(ctx, cfg, os.Stderr); err != nil {
 		log.Fatal(err)
 	}
 }

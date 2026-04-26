@@ -8,7 +8,8 @@
 
 ```bash
 cp config.example.yml config.yml
-# 编辑 config.yml，填入真实的 Provider base_url 和 api_key
+# 编辑 config.yml，填入 provider.providers.* 的真实 base_url / api_key，
+# 并在 provider.models 中配置模型别名、上游模型名和可选价格。
 ```
 
 `config.yml` 已在 `.gitignore` 中，不会提交到仓库。也可通过 `MOONBRIDGE_CONFIG` 环境变量指定其他路径。
@@ -26,7 +27,10 @@ cp config.example.yml config.yml
 │   ├── cache/               # Prompt cache 规划
 │   ├── anthropic/           # Anthropic Messages 客户端
 │   ├── openai/              # OpenAI Responses DTO
+│   ├── provider/            # 多 Provider 路由和连接池
 │   ├── server/              # HTTP 服务器
+│   ├── session/             # 每请求状态隔离
+│   ├── stats/               # session usage / billing 统计
 │   ├── proxy/               # 透明代理
 │   ├── trace/               # 请求/响应转储
 │   └── e2e/                 # 端到端测试
@@ -60,6 +64,7 @@ go build -o moonbridge ./cmd/moonbridge
 
 启动脚本 `scripts/start_codex_with_moonbridge.sh` 和 `scripts/start_claude_code_with_moonbridge.sh` 会自动构建二进制、管理服务进程生命周期，并设置临时 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。
 Codex 脚本会从 `${MOONBRIDGE_CODEX_CONFIG:-$HOME/.codex/config.toml}` 复制 `[tui].status_line` 到 `FakeHome/Codex/config.toml`，但不会改动全局配置。
+两个脚本每次运行都会先清空对应的 `logs/moonbridge-*.log`，然后把脚本生命周期输出和 Moon Bridge 服务输出追加到同一个日志文件中，方便看到启动前配置、客户端退出状态和服务端退出汇总。
 
 ## 测试
 
@@ -83,15 +88,17 @@ go test ./internal/e2e/ -v -count=1
 - 流式请求：验证 `ConvertStreamEventsWithContext()` 的事件顺序、item ID 前缀、custom tool 和 web search 的特殊 delta 事件。
 - 历史转换：验证 `convertInput()` 中连续工具调用的归并逻辑，以及 `output_text` 的压缩。
 - Codex 兼容：验证空 `cached_tokens` 序列化、namespace 展平、`web_search_call` 过滤、custom grammar 保留。
+- 多 Provider：验证模型别名路由、OpenAI protocol 直通、上游模型名改写和 provider 配置校验。
+- Usage / Billing：验证每请求 INFO 使用上游实际模型名、`Billing` 为 session 累计值、`Input` 展示为 `input_tokens + cache_read_input_tokens`。
 - Cache planner：验证各种配置组合（off / automatic / explicit / hybrid）下的断点注入与注册表状态管理。
 - DTO：验证 `input_tokens_details.cached_tokens` 在值为 `0` 时仍被序列化。
-- DeepSeek V4：验证 reasoning_content 剥离、thinking 记忆/重注入、effort 映射、流式 delta 收集等逻辑。
+- DeepSeek V4：验证 reasoning_content 剥离、请求级 thinking state、effort 映射、流式 delta 收集等逻辑。
 
 ## Debug
 
 ### 启用请求追踪
 
-在 `config.yml` 中设置 `trace_requests: true`，所有请求和响应会被写入 `trace/` 目录。详见 [architecture.md](architecture.md) trace 模块说明。
+在 `config.yml` 中设置 `trace_requests: true`，Anthropic 转换路径和 Capture 模式的请求/响应会写入 `trace/` 目录；OpenAI protocol 直通路径主要保留 usage 日志，错误场景会写 trace。详见 [architecture.md](architecture.md) trace 模块说明。
 
 ### 测试用例编写风格
 
@@ -125,7 +132,7 @@ go test ./internal/e2e/ -v -count=1
 
 ## 当前实测结论
 
-缓存配置组合 `mode: automatic` + `prompt_caching: true` + `automatic_prompt_cache: true` + `explicit_cache_breakpoints: true` 在当前 Provider / `claude-opus-4-6` / Codex 请求形态下，第 2 轮可达到基本全输入缓存命中。该结论仅限于当前测试环境；若后续 `cache_read_input_tokens` 长期为 0 或成本异常，应回退到 `mode: explicit` + `automatic_prompt_cache: false`。
+缓存配置组合 `mode: automatic` + `prompt_caching: true` + `automatic_prompt_cache: true` + `explicit_cache_breakpoints: true` 在部分 Anthropic-compatible Provider / Codex 请求形态下，第 2 轮可达到较高缓存命中。该结论依赖具体 Provider、模型和请求形态；若后续 `cache_read_input_tokens` 长期为 0 或成本异常，应回退到 `mode: explicit` + `automatic_prompt_cache: false`，并查看 trace 中的 Provider 原始 usage。
 
 ## 依赖
 

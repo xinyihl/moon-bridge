@@ -41,8 +41,8 @@ type SessionStats struct {
 	totalCost float64
 
 	// Per-model breakdown
-	byModel  map[string]*ModelStats
-	pricing  map[string]ModelPricing
+	byModel map[string]*ModelStats
+	pricing map[string]ModelPricing
 }
 
 // ModelStats tracks usage and cost for a specific model.
@@ -195,14 +195,28 @@ func (s Summary) LogValue() slog.Value {
 		slog.Int64("cache_saved_tokens", s.EffectiveInputSaved),
 		slog.Duration("duration", s.Duration),
 	}
-	if s.TotalCost > 0 {
-		attrs = append(attrs, slog.Float64("cost_cny", s.TotalCost))
-	}
+	attrs = append(attrs, slog.Float64("cost_cny", s.TotalCost))
 	return slog.GroupValue(attrs...)
+}
+
+func FormatUsageLine(model string, usage Usage, cacheHitRate float64, billing float64) string {
+	inputTokens := usage.InputTokens + usage.CacheReadInputTokens
+	return fmt.Sprintf("%s Usage: %.6f M Input, %.6f M Output, Session Cache Hit Rate: %.2f%%, Billing: %.2f CNY",
+		model,
+		float64(inputTokens)/1_000_000,
+		float64(usage.OutputTokens)/1_000_000,
+		cacheHitRate,
+		billing,
+	)
+}
+
+func FormatSummaryLine(s Summary) string {
+	return fmt.Sprintf("Summary：Session Cache Hit Rate(AVG): %.1f%%, Billing: %.2f CNY", s.CacheHitRate, s.TotalCost)
 }
 
 // WriteSummary writes a human-readable summary to the writer.
 func WriteSummary(w io.Writer, s Summary) {
+	fmt.Fprintln(w, FormatSummaryLine(s))
 	fmt.Fprintf(w, "Session Stats: %d requests, %s duration\n", s.Requests, s.Duration.Round(time.Second))
 	fmt.Fprintf(w, "  Input:  %d tokens (%d fresh, %d cache creation, %d cache read)\n",
 		s.InputTokens+s.CacheCreation+s.CacheRead,
@@ -213,14 +227,11 @@ func WriteSummary(w io.Writer, s Summary) {
 	if s.CacheHitRate > 0 {
 		fmt.Fprintf(w, "  Cache Hit Rate: %.1f%% (saved %d tokens)\n", s.CacheHitRate, s.EffectiveInputSaved)
 	}
-	if s.TotalCost > 0 {
-		fmt.Fprintf(w, "  Total Cost: ¥%.4f\n", s.TotalCost)
-		// Per-model breakdown
-		for model, ms := range s.ByModel {
-			if ms.Cost > 0 {
-				fmt.Fprintf(w, "    %s: ¥%.4f (%d req, %d in, %d out)\n",
-					model, ms.Cost, ms.Requests, ms.InputTokens+ms.CacheCreation+ms.CacheRead, ms.OutputTokens)
-			}
+	fmt.Fprintf(w, "  Total Cost: ¥%.6f\n", s.TotalCost)
+	for model, ms := range s.ByModel {
+		if ms.Cost > 0 {
+			fmt.Fprintf(w, "    %s: ¥%.6f (%d req, %d in, %d out)\n",
+				model, ms.Cost, ms.Requests, ms.InputTokens+ms.CacheCreation+ms.CacheRead, ms.OutputTokens)
 		}
 	}
 }

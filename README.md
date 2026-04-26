@@ -1,6 +1,6 @@
 # Moon Bridge
 
-Moon Bridge 是一个 OpenAI Responses 兼容转发层。你可以像调用 OpenAI 一样使用 `/v1/responses`，而 Moon Bridge 在背后把请求转发到 Anthropic Messages 兼容的 Provider API。
+Moon Bridge 是一个 OpenAI Responses 兼容转发层。你可以像调用 OpenAI 一样使用 `/v1/responses`，Moon Bridge 会按模型别名把请求路由到 Anthropic Messages 兼容 Provider，或在配置为 `protocol: "openai"` 时直接透传到 OpenAI-compatible Responses Provider。
 
 ## 快速开始
 
@@ -10,7 +10,7 @@ Moon Bridge 是一个 OpenAI Responses 兼容转发层。你可以像调用 Open
 cp config.example.yml config.yml
 ```
 
-2. 编辑 `config.yml`，填入 Provider 的 `base_url` 和 `api_key`。
+2. 编辑 `config.yml`，填入 `provider.providers` 下各上游 Provider 的 `base_url` 和 `api_key`，并在 `provider.models` 中配置模型别名到上游模型的映射。
 
 3. 启动服务：
 
@@ -38,23 +38,39 @@ go run ./cmd/moonbridge
 
 ## 配置说明
 
-### 模型映射
+### Provider 与模型路由
 
-`provider.models` 定义模型别名。例如客户端请求 `model: "moonbridge"`，Moon Bridge 会把它映射到 Provider 真实的模型名：
+当前推荐使用多 Provider 配置：`provider.providers` 定义上游，`provider.models` 定义客户端可见的模型别名。例如客户端请求 `model: "moonbridge"` 时，会发往 `deepseek` Provider 的 `deepseek-v4-pro`；请求 `model: "gpt-image"` 时，会按 OpenAI Responses 协议直接发往 `openai` Provider 的 `gpt-image-1.5`：
 
 ```yaml
 provider:
+  providers:
+    deepseek:
+      base_url: "https://api.deepseek.com"
+      api_key: "${DEEPSEEK_API_KEY}"
+      version: "2023-06-01"
+    openai:
+      base_url: "https://api.openai.com"
+      api_key: "${OPENAI_API_KEY}"
+      protocol: "openai"
+
   default_model: "moonbridge"
   models:
     moonbridge:
-      name: "claude-sonnet-4-5"
+      provider: "deepseek"
+      name: "deepseek-v4-pro"
       context_window: 200000
       max_output_tokens: 100000
+    gpt-image:
+      provider: "openai"
+      name: "gpt-image-1.5"
 ```
+
+`protocol` 默认为 `anthropic`。设置为 `openai` 时，本轮请求不会进入 Anthropic 转换层，而是保留 OpenAI Responses 格式，只把模型别名改写为上游真实模型名。
 
 ### 模型定价
 
-`provider.models.<alias>.pricing` 是可选的 per-model 价格配置，单位是元（¥）/ 1K tokens。当某个模型配置了价格后，session 结束时会在日志和控制台输出费用统计。
+`provider.models.<alias>.pricing` 是可选的 per-model 价格配置，单位是元（¥）/ M tokens。当某个模型配置了价格后，Moon Bridge 会按 session 累加费用，并在每次请求和服务退出时输出费用统计。
 
 ```yaml
 provider:
@@ -68,8 +84,7 @@ provider:
         cache_read_price: 0.2  # 缓存读取
 ```
 
-费用计算方式：`input_tokens × input_price + cache_creation × cache_write_price + cache_read × cache_read_price + output_tokens × output_price`，四项均为独立计费。如果价格配置不全（某项为 0 或未设置），该项不产生费用。
-
+费用计算方式：`(input_tokens × input_price + cache_creation × cache_write_price + cache_read × cache_read_price + output_tokens × output_price) / 1_000_000`，四项均为独立计费。如果价格配置不全（某项为 0 或未设置），该项不产生费用。每请求 INFO 行中的 `Input` 展示采用 OpenAI 语义：`input_tokens + cache_read_input_tokens`，不把 `cache_creation_input_tokens` 额外计入展示值；cache creation 仍按 `cache_write_price` 计费，并会出现在详细汇总里。
 
 ### Prompt 缓存
 
@@ -97,7 +112,7 @@ provider:
 
 ### 调试抓包
 
-打开 `trace_requests: true` 后，每次请求和响应会按模式写入 `trace/` 目录，方便排查问题。API Key 等敏感信息会自动脱敏。
+打开 `trace_requests: true` 后，Transform 的 Anthropic 转换请求和 Capture 模式的代理流量会按模式写入 `trace/` 目录，方便排查问题。API Key 等敏感 Header 会自动脱敏；OpenAI 协议直通 Provider 当前主要保留上游响应和 usage 日志，错误场景会写入 trace。
 
 ## 配合 Codex CLI 使用
 
@@ -117,8 +132,16 @@ base_url = "http://localhost:38440/v1"
 wire_api = "responses"
 env_key = "MOONBRIDGE_CLIENT_API_KEY"
 
-[model_providers.moonbridge.models.moonbridge]
-name = "Moon Bridge"
+[mcp_servers.deepwiki]
+url = "https://mcp.deepwiki.com/mcp"
+startup_timeout_sec = 3600
+tool_timeout_sec = 3600
+```
+
+也可以让 Moon Bridge 按当前 `config.yml` 生成 Codex 配置片段：
+
+```bash
+go run ./cmd/moonbridge -print-codex-config moonbridge -codex-base-url http://127.0.0.1:38440/v1
 ```
 
 设置客户端 API Key（本地 Moon Bridge 不校验，任意占位值即可）：
@@ -200,17 +223,25 @@ Moon Bridge 支持以下工具类型：
 - `usage.input_tokens_details.cached_tokens`：命中缓存的 token 数
 - `status`：`completed` 或 `incomplete`
 
-当启用 prompt caching 时，Anthropic 侧的缓存创建和命中成本会自动归一化到 OpenAI 风格的用量字段中，方便你在客户端统一查看。
+当启用 prompt caching 时，Anthropic 侧的缓存创建和命中会归一化到 OpenAI Responses 的 `usage` 字段中；Provider 原始缓存明细会保留在 `metadata.provider_usage` 中，方便排查成本。
 
-如果配置了模型定价，服务终止时会自动汇总当前 session 的总费用和按模型拆解的费用明细。日志输出示例：
+如果配置了模型定价，每个成功请求都会输出一行可读 INFO。这里的模型名是实际发往上游的模型名，`Billing` 是当前 session 累计费用，不是单次请求费用：
 
 ```
+deepseek-v4-pro Usage: 0.120000 M Input, 0.004500 M Output, Session Cache Hit Rate: 25.00%, Billing: 0.28 CNY
+gpt-image-1.5 Usage: 1.200000 M Input, 0.500000 M Output, Session Cache Hit Rate: 25.00%, Billing: 3.04 CNY
+```
+
+服务终止时会输出 summary 行和详细拆解：
+
+```
+Summary：Session Cache Hit Rate(AVG): 25.0%, Billing: 3.04 CNY
 Session Stats: 42 requests, 12m30s duration
   Input:  154320 tokens (120000 fresh, 20000 cache creation, 14320 cache read)
   Output: 8500 tokens
   Cache Hit Rate: 9.3% (saved 14320 tokens)
-  Total Cost: ¥0.3180
-    moonbridge: ¥0.3180 (42 req, 154320 in, 8500 out)
+  Total Cost: ¥3.040000
+    moonbridge: ¥3.040000 (42 req, 154320 in, 8500 out)
 ```
 
 ## 错误处理
@@ -218,7 +249,7 @@ Session Stats: 42 requests, 12m30s duration
 常见错误会返回 OpenAI 风格的错误响应：
 
 - 鉴权失败：`401 invalid_api_key`
-- 模型不可用：`403 model_not_found`
+- 权限不足或模型不可用：`403 permission_denied`
 - 参数不支持：`400 unsupported_parameter`
 - 上下文超限：`400 context_length_exceeded`
 - 限流：`429 rate_limit_exceeded`
@@ -231,6 +262,8 @@ Session Stats: 42 requests, 12m30s duration
 
 - Codex 场景：`logs/moonbridge-codex.log`
 - Claude Code 场景：`logs/moonbridge-claude-code.log`
+
+脚本每次启动都会先清空对应日志文件，随后把脚本自身的构建、启动、客户端退出、服务端停止信息和 Moon Bridge 服务日志写入同一个文件。
 
 手动启动时，标准输出即为服务日志。
 

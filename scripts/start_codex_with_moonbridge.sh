@@ -14,10 +14,21 @@ LOG_FILE="${ROOT_DIR}/logs/moonbridge-codex.log"
 GLOBAL_CODEX_CONFIG="${MOONBRIDGE_CODEX_CONFIG:-"${HOME}/.codex/config.toml"}"
 PROMPT="${1:-}"
 
+mkdir -p "$(dirname "$LOG_FILE")"
+: > "$LOG_FILE"
+
+log() {
+  printf '%s\n' "$*" | tee -a "$LOG_FILE"
+}
+
+log_error() {
+  printf '%s\n' "$*" | tee -a "$LOG_FILE" >&2
+}
+
 require_command() {
   local command_name="$1"
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "missing required command: ${command_name}" >&2
+    log_error "missing required command: ${command_name}"
     exit 1
   fi
 }
@@ -38,8 +49,8 @@ wait_for_server() {
   local deadline=$((SECONDS + 30))
   while (( SECONDS < deadline )); do
     if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
-      echo "Moon Bridge exited before it became ready on ${ADDR}" >&2
-      echo "See Moon Bridge log: ${LOG_FILE}" >&2
+      log_error "Moon Bridge exited before it became ready on ${ADDR}"
+      log_error "See Moon Bridge log: ${LOG_FILE}"
       return 1
     fi
     if (echo > "/dev/tcp/${HOST}/${PORT}") >/dev/null 2>&1; then
@@ -47,16 +58,16 @@ wait_for_server() {
     fi
     sleep 0.2
   done
-  echo "Moon Bridge did not start on ${ADDR}" >&2
-  echo "See Moon Bridge log: ${LOG_FILE}" >&2
+  log_error "Moon Bridge did not start on ${ADDR}"
+  log_error "See Moon Bridge log: ${LOG_FILE}"
   return 1
 }
 
 ensure_port_free() {
   if (echo > "/dev/tcp/${HOST}/${PORT}") >/dev/null 2>&1; then
-    echo "port already in use: ${ADDR}" >&2
-    echo "change server.addr in config.yml, or stop the process using ${ADDR}" >&2
-    echo "Moon Bridge log: ${LOG_FILE}" >&2
+    log_error "port already in use: ${ADDR}"
+    log_error "change server.addr in config.yml, or stop the process using ${ADDR}"
+    log_error "Moon Bridge log: ${LOG_FILE}"
     exit 1
   fi
 }
@@ -66,7 +77,7 @@ append_codex_status_line() {
   local status_line=""
 
   if [[ ! -f "$GLOBAL_CODEX_CONFIG" ]]; then
-    echo "No global Codex config found at ${GLOBAL_CODEX_CONFIG}; status_line not copied"
+    log "No global Codex config found at ${GLOBAL_CODEX_CONFIG}; status_line not copied"
     return
   fi
 
@@ -95,7 +106,7 @@ append_codex_status_line() {
   )"
 
   if [[ -z "$status_line" ]]; then
-    echo "No [tui].status_line found in ${GLOBAL_CODEX_CONFIG}; status_line not copied"
+    log "No [tui].status_line found in ${GLOBAL_CODEX_CONFIG}; status_line not copied"
     return
   fi
 
@@ -103,13 +114,15 @@ append_codex_status_line() {
     printf '\n[tui]\n'
     printf '%s\n' "$status_line"
   } >> "$target_config"
-  echo "Copied Codex status_line from ${GLOBAL_CODEX_CONFIG}"
+  log "Copied Codex status_line from ${GLOBAL_CODEX_CONFIG}"
 }
 
 cleanup() {
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+    log "Stopping Moon Bridge"
     kill "$SERVER_PID" >/dev/null 2>&1 || true
     wait "$SERVER_PID" >/dev/null 2>&1 || true
+    log "Moon Bridge stopped"
   fi
 }
 trap cleanup EXIT
@@ -121,41 +134,40 @@ require_command go
 require_command codex
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "missing config file: ${CONFIG_FILE}" >&2
-  echo "copy config.example.yml to config.yml and fill provider settings" >&2
+  log_error "missing config file: ${CONFIG_FILE}"
+  log_error "copy config.example.yml to config.yml and fill provider settings"
   exit 1
 fi
 
-mkdir -p "$CODEX_HOME_DIR" "${ROOT_DIR}/.cache/go-build" "$(dirname "$SERVER_BIN")" "$(dirname "$LOG_FILE")"
-: > "$LOG_FILE"
+mkdir -p "$CODEX_HOME_DIR" "${ROOT_DIR}/.cache/go-build" "$(dirname "$SERVER_BIN")"
 
 export MOONBRIDGE_CONFIG="$CONFIG_FILE"
 export CGO_ENABLED="${CGO_ENABLED:-0}"
 export GOCACHE="${GOCACHE:-"${ROOT_DIR}/.cache/go-build"}"
 
-echo "Building Moon Bridge"
+log "Building Moon Bridge"
 (
   cd "$ROOT_DIR"
   go build -o "$SERVER_BIN" ./cmd/moonbridge
-)
+) 2>&1 | tee -a "$LOG_FILE"
 
-MODE="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-mode)"
+MODE="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-mode 2>>"$LOG_FILE")"
 case "$MODE" in
   Transform|CaptureResponse)
     ;;
   *)
-    echo "config.yml mode must be Transform or CaptureResponse for Codex, got: ${MODE}" >&2
+    log_error "config.yml mode must be Transform or CaptureResponse for Codex, got: ${MODE}"
     exit 1
     ;;
 esac
 
-MODEL_ALIAS="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-codex-model)"
+MODEL_ALIAS="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-codex-model 2>>"$LOG_FILE")"
 if [[ -z "$MODEL_ALIAS" ]]; then
-  echo "provider.default_model or developer.proxy.response.model is required for Codex" >&2
+  log_error "provider.default_model or developer.proxy.response.model is required for Codex"
   exit 1
 fi
 
-ADDR="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-addr)"
+ADDR="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-addr 2>>"$LOG_FILE")"
 parse_addr
 ensure_port_free
 
@@ -163,25 +175,26 @@ ensure_port_free
   --config "$CONFIG_FILE" \
   --print-codex-config "$MODEL_ALIAS" \
   --codex-base-url "http://${BASE_ADDR}/v1" \
+  2>>"$LOG_FILE" \
   > "${CODEX_HOME_DIR}/config.toml"
 append_codex_status_line "${CODEX_HOME_DIR}/config.toml"
 
-echo "Starting Moon Bridge on ${ADDR}"
-echo "Moon Bridge log: ${LOG_FILE}"
+log "Starting Moon Bridge on ${ADDR}"
+log "Moon Bridge log: ${LOG_FILE}"
 (
   cd "$ROOT_DIR"
   "$SERVER_BIN"
-) > "$LOG_FILE" 2>&1 &
+) >> "$LOG_FILE" 2>&1 &
 SERVER_PID="$!"
 wait_for_server
 
 export CODEX_HOME="$CODEX_HOME_DIR"
 export MOONBRIDGE_CLIENT_API_KEY="${MOONBRIDGE_CLIENT_API_KEY:-local-dev}"
 
-echo "Starting Codex with CODEX_HOME=${CODEX_HOME_DIR}"
-echo "Workspace: ${ROOT_DIR}"
-echo "Mode: ${MODE}"
-echo "Model: ${MODEL_ALIAS}"
+log "Starting Codex with CODEX_HOME=${CODEX_HOME_DIR}"
+log "Workspace: ${ROOT_DIR}"
+log "Mode: ${MODE}"
+log "Model: ${MODEL_ALIAS}"
 
 codex_args=(
   --sandbox workspace-write
@@ -193,4 +206,10 @@ if [[ -n "$PROMPT" ]]; then
   codex_args+=("$PROMPT")
 fi
 
+set +e
 codex "${codex_args[@]}"
+CODEX_STATUS=$?
+set -e
+
+log "Codex exited with status ${CODEX_STATUS}"
+exit "$CODEX_STATUS"

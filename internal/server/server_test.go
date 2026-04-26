@@ -16,7 +16,10 @@ import (
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
+	"moonbridge/internal/logger"
+	"moonbridge/internal/provider"
 	"moonbridge/internal/server"
+	"moonbridge/internal/stats"
 	mbtrace "moonbridge/internal/trace"
 )
 
@@ -59,8 +62,21 @@ func (stream *sliceStream) Close() error {
 	return nil
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
 func TestResponsesHandlerReturnsOpenAIResponse(t *testing.T) {
 	provider := &fakeProvider{}
+	var logOutput bytes.Buffer
+	if err := logger.Init(logger.Config{Level: logger.LevelInfo, Format: "text", Output: &logOutput}); err != nil {
+		t.Fatalf("logger.Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = logger.Init(logger.Config{Level: logger.LevelInfo, Format: "text", Output: os.Stderr})
+	})
 	handler := server.New(server.Config{
 		Bridge: bridge.New(config.Config{
 			DefaultMaxTokens: 1024,
@@ -88,6 +104,9 @@ func TestResponsesHandlerReturnsOpenAIResponse(t *testing.T) {
 	}
 	if response["object"] != "response" || response["output_text"] != "Hello from provider" {
 		t.Fatalf("response = %+v", response)
+	}
+	if !strings.Contains(logOutput.String(), "claude-test Usage:") {
+		t.Fatalf("log should use forwarded model, got: %s", logOutput.String())
 	}
 }
 
@@ -240,5 +259,105 @@ func TestResponsesHandlerStreamsOpenAIEvents(t *testing.T) {
 	}
 	if !bytes.Contains(recorder.Body.Bytes(), []byte("event: response.output_text.delta")) {
 		t.Fatalf("stream body = %s", recorder.Body.String())
+	}
+}
+
+func TestResponsesHandlerPassesOpenAIProtocolThroughWithUpstreamModel(t *testing.T) {
+	var upstreamRequest struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+	}
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/v1/responses" {
+			t.Fatalf("upstream path = %q", request.URL.Path)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer openai-key" {
+			t.Fatalf("authorization = %q", got)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&upstreamRequest); err != nil {
+			t.Fatalf("Decode upstream request error = %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_123","object":"response","status":"completed","output":[],"usage":{"input_tokens":1200000,"output_tokens":500000,"input_tokens_details":{"cached_tokens":200000}}}`)),
+		}, nil
+	})}
+
+	providerMgr, err := provider.NewProviderManager(map[string]provider.ProviderConfig{
+		"default": {
+			BaseURL: "https://anthropic.example.test",
+			APIKey:  "anthropic-key",
+		},
+		"openai": {
+			BaseURL:  "https://openai.example.test",
+			APIKey:   "openai-key",
+			Protocol: "openai",
+		},
+	}, map[string]provider.ModelRoute{
+		"image": {Provider: "openai", Name: "gpt-image-1.5"},
+	})
+	if err != nil {
+		t.Fatalf("NewProviderManager() error = %v", err)
+	}
+	var logOutput bytes.Buffer
+	if err := logger.Init(logger.Config{Level: logger.LevelInfo, Format: "text", Output: &logOutput}); err != nil {
+		t.Fatalf("logger.Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = logger.Init(logger.Config{Level: logger.LevelInfo, Format: "text", Output: os.Stderr})
+	})
+	sessionStats := stats.NewSessionStats()
+	sessionStats.SetPricing(map[string]stats.ModelPricing{
+		"image": {
+			InputPrice:     1,
+			OutputPrice:    2,
+			CacheReadPrice: 0.2,
+		},
+	})
+	sessionStats.Record("image", stats.Usage{InputTokens: 1_000_000})
+	handler := server.New(server.Config{
+		Bridge: bridge.New(config.Config{
+			ProviderModels: map[string]config.ProviderModelConfig{
+				"image": {Provider: "openai", Name: "gpt-image-1.5"},
+			},
+			Cache: config.CacheConfig{Mode: "off"},
+		}, cache.NewMemoryRegistry()),
+		ProviderMgr:      providerMgr,
+		OpenAIHTTPClient: httpClient,
+		Stats:            sessionStats,
+	})
+
+	requestBody := bytes.NewBufferString(`{"model":"image","input":"draw"}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", requestBody)
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamRequest.Model != "gpt-image-1.5" {
+		t.Fatalf("upstream model = %q", upstreamRequest.Model)
+	}
+	if upstreamRequest.Input != "draw" {
+		t.Fatalf("upstream input = %q", upstreamRequest.Input)
+	}
+	summary := sessionStats.Summary()
+	if summary.Requests != 2 || summary.InputTokens != 2_000_000 || summary.CacheRead != 200_000 || summary.OutputTokens != 500_000 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if summary.TotalCost < 3.039999 || summary.TotalCost > 3.040001 {
+		t.Fatalf("TotalCost = %f, want 3.04", summary.TotalCost)
+	}
+	for _, want := range []string{
+		"gpt-image-1.5 Usage:",
+		"1.200000 M Input",
+		"0.500000 M Output",
+		"Billing: 3.04 CNY",
+	} {
+		if !strings.Contains(logOutput.String(), want) {
+			t.Fatalf("log missing %q: %s", want, logOutput.String())
+		}
 	}
 }

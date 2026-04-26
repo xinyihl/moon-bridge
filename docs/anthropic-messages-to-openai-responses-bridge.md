@@ -1,8 +1,8 @@
 # Anthropic Messages 到 OpenAI Responses 桥接器
 
-一个协议转换层，对外暴露兼容 OpenAI Responses 的 API（`POST /v1/responses`），同时将请求转发给任意兼容 Anthropic Messages 的上游提供商。桥接器负责请求/响应映射、工具调用转换、提示缓存、流式传输和错误标准化。
+一个 OpenAI Responses 兼容转发层，对外暴露 `POST /v1/responses`。Transform 模式下，Moon Bridge 按模型别名路由请求：Anthropic 协议 Provider 会经过 OpenAI Responses ↔ Anthropic Messages 转换；OpenAI 协议 Provider 会保留 Responses 格式直通上游。桥接器负责请求/响应映射、工具调用转换、提示缓存、流式传输、usage/billing 统计和错误标准化。
 
-支持的客户端包括 [Codex CLI](https://github.com/openai/codex)、自定义工具链，以及任何基于 OpenAI Responses API 构建、需要路由到 Anthropic Messages 提供商的应用程序。
+支持的客户端包括 [Codex CLI](https://github.com/openai/codex)、自定义工具链，以及任何基于 OpenAI Responses API 构建、需要路由到不同上游 Provider 的应用程序。
 
 ## 架构
 
@@ -10,9 +10,12 @@
 flowchart TD
     A[OpenAI Responses 客户端] -->|POST /v1/responses| B[HTTP 处理器<br/>/v1/responses, /responses]
     B --> C[桥接器<br/>协议转换器]
-    C --> D[提供商客户端]
-    D -->|POST /v1/messages| E[(Anthropic 提供商)]
-    D -->|POST /v1/messages?stream=true| E
+    C --> D[ProviderManager<br/>模型路由]
+    D -->|protocol=anthropic| E[桥接器<br/>Responses ↔ Messages]
+    D -->|protocol=openai| F[OpenAI passthrough]
+    E -->|POST /v1/messages| G[(Anthropic 提供商)]
+    E -->|POST /v1/messages stream| G
+    F -->|POST /v1/responses| H[(OpenAI-compatible 提供商)]
 
     subgraph BridgeDetails [桥接器能力]
         direction LR
@@ -35,7 +38,10 @@ internal/anthropic     Anthropic Messages DTO 和 HTTP 客户端
 internal/bridge        协议转换、错误映射、流式状态机
 internal/cache         缓存创建规划器、断点注入、用量标准化
 internal/config        YAML 配置加载和校验
+internal/provider      多 Provider 路由、protocol 判断和连接池
 internal/server        /v1/responses 和 /responses 的 HTTP 处理器
+internal/session       每请求状态隔离
+internal/stats         session usage / billing 统计
 internal/proxy         透明代理模式（CaptureResponse、CaptureAnthropic）
 internal/trace         请求/响应转储到本地文件系统
 internal/app           应用组装和生命周期管理
@@ -44,7 +50,31 @@ internal/e2e           真实提供商端到端测试
 
 ## 配置
 
-基于 YAML，详见 [config.example.yml](/home/zhiyi/Projects/misc/MoonBridge/config.example.yml)。默认从 `config.yml` 加载配置文件，可通过 `MOONBRIDGE_CONFIG` 环境变量覆盖。敏感凭证和本地覆盖项放入被 `.gitignore` 忽略的 `config.yml`；示例文件始终纳入版本控制。
+基于 YAML，详见 [config.example.yml](../config.example.yml)。默认从 `config.yml` 加载配置文件，可通过 `MOONBRIDGE_CONFIG` 环境变量覆盖。敏感凭证和本地覆盖项放入被 `.gitignore` 忽略的 `config.yml`；示例文件始终纳入版本控制。
+
+当前公开配置以多 Provider 为主：
+
+```yaml
+provider:
+  providers:
+    deepseek:
+      base_url: "https://api.deepseek.com"
+      api_key: "${DEEPSEEK_API_KEY}"
+      version: "2023-06-01"
+    openai:
+      base_url: "https://api.openai.com"
+      api_key: "${OPENAI_API_KEY}"
+      protocol: "openai"
+  models:
+    moonbridge:
+      provider: "deepseek"
+      name: "deepseek-v4-pro"
+    gpt-image:
+      provider: "openai"
+      name: "gpt-image-1.5"
+```
+
+`protocol` 默认为 `anthropic`。设置为 `openai` 时，Transform 不进入 Anthropic 转换层，只改写请求中的 `model` 并代理到上游 Responses 端点。
 
 ### 模式
 
@@ -58,14 +88,14 @@ internal/e2e           真实提供商端到端测试
 
 | OpenAI Responses 字段 | Anthropic Messages 字段 | 处理方式 |
 | --- | --- | --- |
-| `model` | `model` | 通过配置进行别名映射；模型名称不做硬编码。 |
+| `model` | `model` | 通过配置进行别名映射和 Provider 路由；模型名称不做硬编码。 |
 | `instructions` | `system` | 最高优先级的系统指令；developer 角色输入前置。 |
 | `input`（字符串） | `messages[0].content` | 单条用户文本消息。 |
-| `input[].role=user` | `messages[].role=user` | 文本块直接透传；图片在提供商支持时转换。 |
+| `input[].role=user` | `messages[].role=user` | 当前提取文本块（`input_text` / `text` / `output_text`）。 |
 | `input[].role=assistant` | `messages[].role=assistant` | 历史记录中的文本内容和 tool_use 块。 |
 | `function_call_output` / 工具输出 | `role=user` + `tool_result` | `call_id` → `tool_use_id`。 |
 | `max_output_tokens` | `max_tokens` | 缺失时从配置注入默认值。 |
-| `temperature` / `top_p` | 同名参数 | 直接透传；不支持的参数返回错误。 |
+| `temperature` / `top_p` | 同名参数 | Anthropic 路径默认透传；启用 DeepSeek V4 扩展时会移除这两个字段以适配 Provider。 |
 | `stop` | `stop_sequences` | 标准化为字符串数组。 |
 | `stream` | `stream` | 直接透传；切换 SSE 转换器。 |
 | `tool_choice:"auto"` | `tool_choice:auto` 或省略 | 优先使用原生 auto。 |
@@ -77,9 +107,9 @@ internal/e2e           真实提供商端到端测试
 
 1. `input` 被解析为字符串或条目数组。
 2. `system`/`developer` 角色条目被提取到 Anthropic 的顶层 `system` 字段。
-3. `user`/`assistant` 消息顺序被保留，不做跨轮次合并。
-4. 多模态内容（`input_text`、`input_image`）按提供商能力画像处理。
-5. `previous_response_id` 需要 `store=true` 和活跃的本地存储；否则返回 400。
+3. `user`/`assistant` 消息顺序被保留；连续工具调用和连续工具输出会在后续步骤中归并成 Anthropic 合法轮次。
+4. 当前只提取文本内容块（`input_text`、`text`、`output_text`）；图片、文件 ID 和后台 response store 尚未实现。
+5. `previous_response_id` / `store` 会被解析，但当前没有本地 response store，不会自动补历史。
 
 ### 自定义工具与 Codex 兼容性
 
@@ -95,8 +125,8 @@ internal/e2e           真实提供商端到端测试
 
 ### Web Search 桥接
 
+OpenAI `web_search`/`web_search_preview` 工具会在 Provider 支持时转换为 Anthropic `web_search_20250305` 服务端工具。`provider.web_search.support:auto` 会在 Transform 启动时用默认模型做一次流式轻量探测；只有探测证明可用才注入，否则本轮进程保守禁用搜索工具注入。也可以用 `enabled` 强制注入，或用 `disabled` 完全关闭。在响应侧，`server_tool_use:web_search` 被映射回 Codex `web_search_call` 输出条目。空搜索 action 和前导消息（`Search results for query:`）会被过滤，避免污染对话历史。
 
-OpenAI `web_search`/`web_search_preview` 工具会在 Provider 支持时转换为 Anthropic `web_search_20250305` 服务端工具。`provider.web_search.support:auto` 会在 Transform 启动时用默认模型做一次流式轻量探测；只有探测证明可用才注入，否则本轮进程保守禁用搜索工具注入。也可以用 `enabled` 强制注入，或用 `disabled` 完全关闭。在响应侧，`server_tool_use:web_search` 被映射回 Codex `web_search_call` 输出条目。空搜索结果和前导消息（`Search results for query:`）会被过滤，避免污染对话历史。
 ### Injected Web Search
 
 `injected` 模式：桥接器不依赖 Provider 的服务端搜索工具，改为向模型注入 `tavily_search`（function-type 工具）和可选的 `firecrawl_fetch` 两个函数工具。模型调用这些工具时，websearch orchestrator 拦截调用、通过 Tavily / Firecrawl API 执行搜索、将结果回传给模型继续推理，最后的响应中搜索过程对 Codex 完全透明。需要配置 `tavily_api_key`；`firecrawl_api_key` 可选（不配则不注入 `firecrawl_fetch`）。
@@ -150,29 +180,26 @@ type CacheCreationPlan struct {
     TTL         string            // 5m, 1h
     LocalKey    string            // 所有稳定指纹组件的 SHA-256
     Breakpoints []CacheBreakpoint // 作用域：tools, system, messages
-    WarmPolicy  string            // none, leader, background
+    WarmPolicy  string            // 当前为 none
     Reason      string
 }
 ```
 
-**决策流程：**
+**当前决策流程：**
 
 1. 提供商能力检查 → 如果提示缓存被禁用则跳过。
-2. 稳定性检查 → 从缓存前缀中排除时间戳、请求 ID、随机值、最新用户消息。
-3. Token 阈值检查 → 如果预估 token 低于 `min_cache_tokens` 则跳过。
-4. 价值检查 → 如果 `estimated_tokens * expected_reuse` 低于 `minimum_value_score` 则跳过。
-5. 注册表检查 → 如果已经是 warm，重新注入相同断点以获得读取命中。
-6. 断点选择 → 优先 `tools` → `system` → `messages` 稳定前缀，最多 4 个断点。
+2. Token 阈值检查 → 如果预估 token 低于 `min_cache_tokens` 则跳过。
+3. 价值检查 → 如果 `estimated_tokens * expected_reuse` 低于 `minimum_value_score` 则跳过。
+4. 注册表检查 → 如果相同 `localKey` 已经是 warm，继续注入相同断点以获得读取命中。
+5. 断点选择 → 按当前转换后的 tools、system、messages 规范 JSON hash 生成本地 key；断点按 tools → system → messages 顺序追加，最多 `max_breakpoints` 个。
 
 **断点放置：**
 
-| 前缀模式 | 断点位置 | 说明 |
+| Scope | 断点位置 | 说明 |
 | --- | --- | --- |
-| 大型工具集 + 短系统提示 | 最后一个工具定义 | 跨会话稳定 |
-| 长系统提示 | 最后一个系统文本块 | `system` 必须是块数组 |
-| 长文档作为首条用户消息 | 首条用户消息中最后一个文本/图片块 | 断点后是后续问题 |
-| 多轮会话 | 最后一条稳定历史消息 | 最新用户问题被排除 |
-| 工具调用后延续 | 最后一条稳定 `tool_result` 之后 | 工具结果每次调用不同 |
+| `tools` | 最后一个工具定义 | 当本轮请求存在工具时加入 |
+| `system` | 最后一个 system 块 | 当本轮请求存在 system / instructions 时加入 |
+| `messages` | 最后一条消息的最后一个 content block | 当前按转换后的 messages 整体 hash 生成 key |
 
 **注入算法：**
 
@@ -199,11 +226,10 @@ openai.usage.input_tokens_details.cached_tokens =
 
 提供商级别的明细（`cache_creation_input_tokens`、`cache_creation.ephemeral_*`）保留在 `response.metadata.provider_usage` 中供成本分析。注意 `cached_tokens` 始终序列化，即使为零，以避免 Codex 解析错误。
 
-### 并发与预热
+### 注册表与预热
 
-- **Singleflight**：对于给定的 `local_cache_key`，只有一个"leader"请求写入缓存；跟随者要么等待第一个上游响应事件，要么直接转发。
-- **后台预热**：可选；发送一个最小请求（例如"只回复 OK"）并带上缓存标记来预预热。这仍然会消耗 token。
-- **注册表**：内存中，记录 `local_cache_key`、断点哈希、TTL、时间戳和近期用量信号。不存储提示文本。
+- **注册表**：内存中，记录 `local_cache_key`、状态、过期时间和近期用量信号。不存储提示文本。
+- **预热**：当前没有后台预热 worker，也没有跨请求 singleflight；缓存创建依赖正常请求携带 `cache_control` 后由 Provider 返回 `cache_creation_input_tokens`。
 
 ### 结果判定
 
@@ -215,7 +241,6 @@ openai.usage.input_tokens_details.cached_tokens =
 | `cache_read_input_tokens > 0` | `warm` — 读取命中，累积命中率 |
 | 两者都为 0，且 `input_tokens` 较低 | `not_cacheable` — 可能低于阈值 |
 | 两者都为 0，且 token 充足 | `missed` — 怀疑前缀不稳定 |
-| 提供商缓存参数错误 | `failed` — 不带缓存字段重试 |
 
 ## 工具调用映射
 
@@ -279,7 +304,7 @@ SSE 不变量：
 | `stop_sequence` | `completed` | — |
 | `max_tokens` | `incomplete` | `{reason:"max_output_tokens"}` |
 | `model_context_window` | `incomplete` | `{reason:"max_input_tokens"}` |
-| `refusal` | `completed` | —（发出 `refusal` 内容部分） |
+| `refusal` | `completed` | 当前作为普通 completed 状态处理；没有专门的 refusal content part |
 | `pause_turn` | `incomplete` | `{reason:"provider_pause"}` |
 
 ## 错误映射
@@ -287,7 +312,7 @@ SSE 不变量：
 | 场景 | HTTP 状态码 | OpenAI 错误码 |
 | --- | --- | --- |
 | 认证失败 | 401 | `invalid_api_key` |
-| 权限 / 模型不可用 | 403 | `model_not_found` / `permission_denied` |
+| 权限 / 模型不可用 | 403 | `permission_denied` |
 | 不支持的字段 | 400 | `unsupported_parameter` |
 | 无效的 JSON schema | 400 | `invalid_request_error` |
 | 上下文超限 | 400 / 413 | `context_length_exceeded` |
@@ -341,13 +366,13 @@ cache:
   max_breakpoints: 4
 ```
 
-所有不支持但被请求的能力都会产生显式错误 —— 不做静默降级。
+未知工具类型会产生显式 `unsupported_parameter` 错误。部分 OpenAI 内置工具（`file_search`、`computer_use_preview`、`image_generation`）当前会被静默跳过；`web_search` 在探测不支持或配置为 `disabled` 时也会跳过。
 
 ### 安全
 
 - 提供商 API 密钥从不暴露给客户端；客户端和上游密钥分开配置。
-- 日志对 `Authorization` 头、工具参数中的类键字段、以及图片/文件 base64 内容进行脱敏。
-- 请求/响应追踪包含追踪 ID 但不包含完整提示（除非审计模式开启）。
+- trace 序列化会脱敏 `Authorization`、`x-api-key` 等敏感 Header。
+- 请求/响应追踪会包含请求体和响应体，可能包含完整提示与工具参数；只应在本地受控环境中开启 `trace_requests`。
 - `.gitignore` 覆盖 `config.yml`、`config.yaml`、`helloagents/`、`.codex`、`.claude`、`AGENTS.md`、`CLAUDE.md`、`trace/` 和 `FakeHome/`。
 
 ## 实现状态
@@ -360,16 +385,18 @@ cache:
 - Codex 对话历史合并（连续工具调用 → 合并的 Anthropic 轮次）
 - 带 automatic/explicit/hybrid 断点策略的提示缓存规划器
 - `cache_control` 注入和用量标准化
-- 缓存注册表（内存中），带状态跟踪和并发 leader/follower 模式
+- 缓存注册表（内存中），带状态跟踪
 - 错误映射（从提供商错误生成 OpenAI 风格错误）
 - 追踪记录（按模式、按会话、按请求编号）
 - 透明代理模式（CaptureResponse、CaptureAnthropic）
+- 多 Provider 路由和 OpenAI protocol Responses 直通
+- session 级 usage / billing 累计与退出汇总
 - 配置 schema 校验
 - 真实提供商端到端测试
 
 ### 已知缺口
 
-- 不支持多数 OpenAI 内置工具（`file_search`、`computer_use`、`code_interpreter`）；`web_search` 会按 Provider 能力桥接到 Anthropic 服务端工具
+- 不支持多数 OpenAI 内置工具（`file_search`、`computer_use`、`code_interpreter`、`image_generation`）；`web_search` 会按 Provider 能力桥接到 Anthropic 服务端工具或 injected 搜索循环
 - 不支持文件 ID 解析或后台响应
 - 不支持 `previous_response_id` / `response.store` 持久化
 - 没有真实 token 计数器；缓存阈值使用粗略估算（`len(json)/4`）

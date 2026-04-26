@@ -10,8 +10,8 @@ import (
 
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
-	"moonbridge/internal/extensions/websearchinjected"
 	"moonbridge/internal/config"
+	"moonbridge/internal/extensions/websearchinjected"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/provider"
 	"moonbridge/internal/proxy"
@@ -126,9 +126,10 @@ func buildProviderDefsFromConfig(cfg config.Config) map[string]provider.Provider
 				APIKey:    def.APIKey,
 				Version:   def.Version,
 				UserAgent: def.UserAgent,
-			Protocol:   def.Protocol,
+				Protocol:  def.Protocol,
 			}
 		}
+		return defs
 	}
 	// Legacy single-provider mode.
 	return provider.BuildProviderConfigs(
@@ -273,7 +274,7 @@ func runHTTPServer(ctx context.Context, addr string, handler http.Handler, error
 	case <-ctx.Done():
 		if sessionStats != nil {
 			summary := sessionStats.Summary()
-			logger.Info("session summary", "stats", summary)
+			logger.Info(stats.FormatSummaryLine(summary))
 			fmt.Fprintln(errors)
 			stats.WriteSummary(errors, summary)
 		}

@@ -40,7 +40,7 @@ type Config struct {
 	ProviderAPIKey    string
 	ProviderVersion   string
 	ProviderUserAgent string
-	Protocol  string // "anthropic" (default) or "openai"
+	Protocol          string // "anthropic" (default) or "openai"
 	WebSearchSupport  WebSearchSupport
 	WebSearchMaxUses  int
 	TavilyAPIKey      string
@@ -119,10 +119,41 @@ func (cfg Config) Validate() error {
 }
 
 func (cfg Config) validateTransform() error {
+	if err := cfg.validateSearchConfig(); err != nil {
+		return err
+	}
 	// Multi-provider mode: ProviderDefs is non-empty.
 	if len(cfg.ProviderDefs) > 0 {
-		if len(cfg.ModelMap) == 0 && len(cfg.ProviderModels) == 0 {
+		if len(cfg.ProviderModels) == 0 {
 			return errors.New("provider.models must contain at least one model mapping")
+		}
+		for key, def := range cfg.ProviderDefs {
+			if key == "" {
+				return errors.New("provider.providers cannot contain empty provider keys")
+			}
+			if def.BaseURL == "" {
+				return fmt.Errorf("provider.providers.%s.base_url is required", key)
+			}
+			if def.APIKey == "" {
+				return fmt.Errorf("provider.providers.%s.api_key is required", key)
+			}
+			switch def.Protocol {
+			case "", "anthropic", "openai":
+			default:
+				return fmt.Errorf("provider.providers.%s.protocol must be \"anthropic\" or \"openai\"", key)
+			}
+		}
+		for alias, model := range cfg.ProviderModels {
+			if alias == "" || model.Name == "" {
+				return errors.New("provider.models cannot contain empty aliases or models")
+			}
+			providerKey := model.Provider
+			if providerKey == "" {
+				providerKey = "default"
+			}
+			if _, ok := cfg.ProviderDefs[providerKey]; !ok {
+				return fmt.Errorf("provider.models.%s.provider references unknown provider %q", alias, providerKey)
+			}
 		}
 		return nil
 	}
@@ -141,6 +172,10 @@ func (cfg Config) validateTransform() error {
 			return errors.New("provider.models cannot contain empty aliases or models")
 		}
 	}
+	return nil
+}
+
+func (cfg Config) validateSearchConfig() error {
 	if cfg.WebSearchSupport == WebSearchSupportInjected {
 		if cfg.TavilyAPIKey == "" {
 			return errors.New("provider.tavily_api_key is required when web_search.support is 'injected'")

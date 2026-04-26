@@ -3,6 +3,7 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -23,7 +24,7 @@ type ProviderConfig struct {
 	APIKey    string     `yaml:"api_key"`
 	Version   string     `yaml:"version"`
 	UserAgent string     `yaml:"user_agent"`
-	Protocol  string // "anthropic" (default) or "openai"
+	Protocol  string     // "anthropic" (default) or "openai"
 	HTTP      HTTPConfig `yaml:"http"`
 }
 
@@ -113,17 +114,12 @@ func (pm *ProviderManager) ClientFor(modelAlias string) (string, *anthropic.Clie
 }
 
 // ProbeWebSearch probes a specific model's provider for web_search support.
-func (pm *ProviderManager) ProbeWebSearch(ctx interface{ DeepSeekV4Enabled() bool }, modelAlias string) bool {
-	_, client, err := pm.ClientFor(modelAlias)
+func (pm *ProviderManager) ProbeWebSearch(ctx context.Context, modelAlias string) (bool, error) {
+	upstreamModel, client, err := pm.ClientFor(modelAlias)
 	if err != nil {
-		return false
+		return false, err
 	}
-	// Build a minimal Anthropic request from the model info.
-	supported, probeErr := client.ProbeWebSearch(nil, modelAlias)
-	if probeErr != nil {
-		return false
-	}
-	return supported
+	return client.ProbeWebSearch(ctx, upstreamModel)
 }
 
 // ProviderKeys returns all configured provider keys.
@@ -258,13 +254,22 @@ func (pm *ProviderManager) ProtocolForKey(key string) string {
 func (pm *ProviderManager) ProtocolForModel(modelAlias string) string {
 	route, ok := pm.routes[modelAlias]
 	if !ok {
-		return "anthropic"
+		return pm.ProtocolForKey(pm.defaultK)
 	}
 	providerKey := route.Provider
 	if providerKey == "" {
 		providerKey = pm.defaultK
 	}
 	return pm.ProtocolForKey(providerKey)
+}
+
+// UpstreamModelFor returns the upstream model name for a model alias.
+func (pm *ProviderManager) UpstreamModelFor(modelAlias string) string {
+	route, ok := pm.routes[modelAlias]
+	if !ok || route.Name == "" {
+		return modelAlias
+	}
+	return route.Name
 }
 
 // ProviderBaseURL returns the base URL for a given provider key.

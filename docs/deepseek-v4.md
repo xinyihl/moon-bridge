@@ -1,6 +1,6 @@
 # DeepSeek V4 扩展
 
-Moon Bridge 内置 DeepSeek V4 Provider 扩展，处理 DeepSeek 特有的推理内容（thinking/reasoning_content）行为，使得 Codex CLI 等多轮对话客户端可以正常使用 DeepSeek V4 模型。
+Moon Bridge 内置 DeepSeek V4 Provider 扩展，处理 DeepSeek 特有的推理内容（thinking/reasoning_content）行为，使得 Codex CLI 等客户端可以通过 Anthropic Messages 兼容接口使用 DeepSeek V4 模型。
 
 ## 为什么需要扩展
 
@@ -30,13 +30,15 @@ provider:
 
 这样 DeepSeek 不会因为收到非法字段而返回 400。
 
-### 2. Thinking 记忆与重注入
+### 2. Thinking 状态与重注入
 
-扩展维护一个进程内 `State`，在每轮模型返回后记录：
+当前代码在每个 HTTP 请求开始时创建独立 `Session`，并在 Session 内维护 `State`。这样可以避免并发请求之间的 thinking 内容互相污染。`State` 能在同一请求的转换流程中记录：
 
-- **工具调用关联**：模型在调用工具前产生的 thinking 内容，按 `tool_call_id` 索引。下一轮如果同一 `tool_use` id 出现于历史 input，扩展会在对应的 `assistant` 消息前自动注入之前缓存的 thinking block。
-- **纯文本关联**：模型在产生文本输出前产生的 thinking 内容，按文本 hash 索引。下一轮如果 assistant 消息包含同一段文本，扩展会在该消息前注入缓存的 thinking block。
+- **工具调用关联**：模型在调用工具前产生的 thinking 内容，按 `tool_call_id` 索引；后续转换如果在历史 input 中看到同一 `tool_use` id，会在对应的 `assistant` 消息前注入已缓存的 thinking block。
+- **纯文本关联**：模型在产生文本输出前产生的 thinking 内容，按文本 hash 索引；后续转换如果看到同一段 assistant 文本，会在该消息前注入已缓存的 thinking block。
 - **容量控制**：记忆上限 1024 条，超出后按 FIFO 淘汰最旧记录。
+
+需要注意：这个状态是请求级的，不是全局会话持久化存储；HTTP 请求结束后不会跨请求保存 thinking 缓存。跨轮对话仍依赖客户端把必要历史发回 Moon Bridge。
 
 ### 3. reasoning_effort 映射
 
@@ -49,13 +51,13 @@ provider:
 
 同时移除 `temperature` 和 `top_p` 字段。
 
-### 4. Reasoning 输出注入
+### 4. Reasoning 输出处理
 
-DeepSeek 返回的 `thinking` 或 `reasoning_content` 块会被提取并转为 OpenAI 风格的输出消息（`role: "assistant"`），插入到真正的模型输出之前。Codex 客户端因此可以展示推理过程。
+DeepSeek 返回的 `thinking` 或 `reasoning_content` 块不会作为普通 `output_text` 返回给 OpenAI Responses 客户端；转换层会跳过这些块，避免把 Provider 专用字段回传进后续输入导致上游报错。流式路径会识别 thinking delta 并记录到请求级 `State`，供同一请求内的工具链转换逻辑使用。
 
 ### 5. 流式处理
 
-流式模式下，扩展通过 `StreamState` 逐事件收集 `thinking_delta` / `reasoning_content_delta` / `signature_delta`，在 thinking block 结束时将其汇入 `State` 供下一轮使用。若上游只返回 `signature_delta` 而没有 thinking 文本，扩展也会缓存并回放一个空文本的 `thinking` block，避免下一轮 thinking mode 请求因缺少 `content[].thinking` 被拒绝。
+流式模式下，扩展通过 `StreamState` 逐事件收集 `thinking_delta` / `reasoning_content_delta` / `signature_delta`，在 thinking block 结束时将其汇入当前请求的 `State`。若上游只返回 `signature_delta` 而没有 thinking 文本，扩展也会缓存一个空文本的 `thinking` block，避免同一请求内后续工具链转换因缺少 `content[].thinking` 被拒绝。
 
 ## 模块结构
 
@@ -75,12 +77,12 @@ internal/extensions/deepseek_v4/
 | `bridge/request.go:convertInput()` | 剥离历史 reasoning_content |
 | `bridge/request.go:convertInput()` | 为 tool_use / assistant text 注入缓存的 thinking block |
 | `bridge/bridge.go:ToAnthropic()` | 调用 `ToAnthropicRequest` 变异请求 |
-| `bridge/bridge.go:FromAnthropicWithPlanAndContext()` | 记录本轮 thinking 到 State |
-| `bridge/stream.go:ConvertStreamEventsWithContext()` | 创建 StreamState；结束时汇入 State |
+| `bridge/bridge.go:FromAnthropicWithPlanAndContext()` | 记录本轮 thinking 到请求级 State |
+| `bridge/stream.go:ConvertStreamEventsWithContext()` | 创建 StreamState；结束时汇入请求级 State |
 | `bridge/stream_events.go` | 流式事件中识别和收集 thinking delta |
 
 ## 注意事项
 
 - 扩展仅在 `mode: Transform` 且 `provider.deepseek_v4: true` 时生效。
-- `State` 是进程内内存存储，服务重启后丢失。首次请求或思维链变化后可能出现一轮缺少推理输出的情况，不影响功能正确性。
-- thinking 的重注入依赖 tool_call_id 或文本 hash 匹配，如果模型在不同轮次对同一工具调用产生不同文本，可能匹配失败，同样不影响功能，仅影响推理显示完整性。
+- `State` 是请求级内存存储，HTTP 请求结束后丢失，不提供跨请求持久化。
+- thinking 的重注入依赖 tool_call_id 或文本 hash 匹配；如果客户端没有在下一轮带回可匹配历史，或模型对同一工具调用产生不同文本，可能匹配失败，不影响普通文本/工具调用转换。
