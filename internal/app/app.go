@@ -63,7 +63,7 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 	resolvePerProviderWebSearch(ctx, cfg, providerMgr, errors)
 
 	sessionStats := stats.NewSessionStats()
-	// Set per-model pricing from routes
+	// Set per-model pricing from routes and provider/model direct references
 	pricing := make(map[string]stats.ModelPricing)
 	for alias, route := range cfg.Routes {
 		if route.InputPrice > 0 || route.OutputPrice > 0 || route.CacheWritePrice > 0 || route.CacheReadPrice > 0 {
@@ -72,6 +72,23 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 				OutputPrice:     route.OutputPrice,
 				CacheWritePrice: route.CacheWritePrice,
 				CacheReadPrice:  route.CacheReadPrice,
+			}
+		}
+	}
+	// Also index pricing by provider/model slug for direct references.
+	for providerKey, def := range cfg.ProviderDefs {
+		for modelName, meta := range def.Models {
+			slug := providerKey + "/" + modelName
+			if _, exists := pricing[slug]; exists {
+				continue // route alias already has pricing (may differ from model meta)
+			}
+			if meta.InputPrice > 0 || meta.OutputPrice > 0 || meta.CacheWritePrice > 0 || meta.CacheReadPrice > 0 {
+				pricing[slug] = stats.ModelPricing{
+					InputPrice:      meta.InputPrice,
+					OutputPrice:     meta.OutputPrice,
+					CacheWritePrice: meta.CacheWritePrice,
+					CacheReadPrice:  meta.CacheReadPrice,
+				}
 			}
 		}
 	}
