@@ -8,7 +8,7 @@ import (
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
-	"moonbridge/internal/extension"
+	"moonbridge/internal/plugin"
 	deepseekv4 "moonbridge/internal/extensions/deepseek_v4"
 	"moonbridge/internal/openai"
 )
@@ -30,9 +30,9 @@ func testBridge() *bridge.Bridge {
 }
 
 func testBridgeWithConfig(cfg config.Config) *bridge.Bridge {
-	exts := extension.NewRegistry()
-	exts.Register(deepseekv4.NewHook(cfg.DeepSeekV4ForModel))
-	return bridge.New(cfg, cache.NewMemoryRegistry(), exts)
+	plugins := plugin.NewRegistry(nil)
+	plugins.Register(deepseekv4.NewPlugin(cfg.DeepSeekV4ForModel))
+	return bridge.New(cfg, cache.NewMemoryRegistry(), plugins)
 }
 
 func testBridgeWithWebSearchDisabled() *bridge.Bridge {

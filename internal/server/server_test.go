@@ -16,7 +16,7 @@ import (
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
-	"moonbridge/internal/extension"
+	"moonbridge/internal/plugin"
 	deepseekv4 "moonbridge/internal/extensions/deepseek_v4"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/provider"
@@ -290,12 +290,12 @@ func TestResponsesHandlerReusesCodexSessionForDeepSeekThinking(t *testing.T) {
 		ProviderDefs:     map[string]config.ProviderDef{"default": {}},
 		Cache:            config.CacheConfig{Mode: "off"},
 	}
-	exts := extension.NewRegistry()
-	exts.Register(deepseekv4.NewHook(cfg.DeepSeekV4ForModel))
+	plugins := plugin.NewRegistry(nil)
+	plugins.Register(deepseekv4.NewPlugin(cfg.DeepSeekV4ForModel))
 	handler := server.New(server.Config{
-		Bridge:     bridge.New(cfg, cache.NewMemoryRegistry(), exts),
+		Bridge:     bridge.New(cfg, cache.NewMemoryRegistry(), plugins),
 		Provider:   provider,
-		Extensions: exts,
+		Plugins: plugins,
 	})
 
 	firstRequest := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-test","input":"inspect","stream":true}`))

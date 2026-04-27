@@ -11,16 +11,16 @@ import (
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
-	"moonbridge/internal/extension"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
 	"moonbridge/internal/session"
+	"moonbridge/internal/plugin"
 )
 
 type Bridge struct {
 	cfg      config.Config
 	registry *cache.MemoryRegistry
-	exts     *extension.Registry
+	plugins  *plugin.Registry
 }
 
 type ConversionContext struct {
@@ -143,14 +143,14 @@ func (err *RequestError) Error() string {
 	return err.Message
 }
 
-func New(cfg config.Config, registry *cache.MemoryRegistry, exts *extension.Registry) *Bridge {
+func New(cfg config.Config, registry *cache.MemoryRegistry, plugins *plugin.Registry) *Bridge {
 	if registry == nil {
 		registry = cache.NewMemoryRegistry()
 	}
-	if exts == nil {
-		exts = extension.NewRegistry()
+	if plugins == nil {
+		plugins = plugin.NewRegistry(nil)
 	}
-	return &Bridge{cfg: cfg, registry: registry, exts: exts}
+	return &Bridge{cfg: cfg, registry: registry, plugins: plugins}
 }
 
 // RequestOptions carries per-request overrides resolved by the server layer.
@@ -224,7 +224,7 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session
 		Metadata:      request.Metadata,
 	}
 
-	bridge.exts.PostConvertRequest(request.Model, &converted, request.Reasoning)
+	bridge.plugins.PostConvertRequest(request.Model, &converted, request.Reasoning)
 
 	plan, err := bridge.planCache(request, converted)
 	if err != nil {
@@ -279,7 +279,7 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 		log.Debug("updated cache registry", "key", registryKey, "input_tokens", response.Usage.InputTokens, "cache_creation", response.Usage.CacheCreationInputTokens, "cache_read", response.Usage.CacheReadInputTokens)
 	}
 	if sess != nil {
-		bridge.exts.RememberResponseContent(model, response.Content, sess.ExtensionData)
+		bridge.plugins.RememberResponseContent(model, response.Content, sess.ExtensionData)
 	}
 
 	output := make([]openai.OutputItem, 0, len(response.Content))
@@ -290,7 +290,7 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 
 	for index, block := range response.Content {
 		// Let extensions filter/extract reasoning from content blocks.
-		skip, rt := bridge.exts.OnResponseContent(model, block)
+		skip, rt := bridge.plugins.OnResponseContent(model, block)
 		thinkingText += rt
 		if skip {
 			continue
@@ -427,7 +427,7 @@ func (bridge *Bridge) errorResponse(err error, model string) (int, openai.ErrorR
 	}
 	if providerError, ok := anthropic.IsProviderError(err); ok {
 		msg := providerError.Error()
-		msg = bridge.exts.TransformError(model, msg)
+		msg = bridge.plugins.TransformError(model, msg)
 		return providerError.OpenAIStatus(), openai.ErrorResponse{Error: openai.ErrorObject{
 			Message: msg,
 			Type:    providerError.OpenAIType(),
@@ -450,6 +450,6 @@ func (bridge *Bridge) ProviderFor(modelAlias string) string {
 // NewSession creates a session with extension data initialized.
 func (bridge *Bridge) NewSession() *session.Session {
 	sess := session.New()
-	sess.InitExtensions(bridge.exts.NewSessionData())
+	sess.InitExtensions(bridge.plugins.NewSessionData())
 	return sess
 }

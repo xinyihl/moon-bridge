@@ -19,7 +19,7 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil, nil
 	}
-	raw = bridge.exts.PreprocessInput(modelAlias, raw)
+	raw = bridge.plugins.PreprocessInput(modelAlias, raw)
 	trimmed := strings.TrimSpace(string(raw))
 	if strings.HasPrefix(trimmed, "\"") {
 		var text string
@@ -52,7 +52,7 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 		case item.Phase == "commentary":
 			continue
 		case item.Type == "reasoning":
-			pendingReasoningText = bridge.exts.ExtractReasoningFromSummary(modelAlias, item.Summary)
+			pendingReasoningText = bridge.plugins.ExtractReasoningFromSummary(modelAlias, item.Summary)
 			continue
 		case item.Type == "function_call":
 			seenToolHistory = true
@@ -114,7 +114,7 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 				}}, blocks...)
 				pendingReasoningText = ""
 			} else if seenToolHistory {
-				blocks = bridge.exts.PrependThinkingToAssistant(modelAlias, blocks, extData)
+				blocks = bridge.plugins.PrependThinkingToAssistant(modelAlias, blocks, extData)
 			}
 			messages = append(messages, anthropic.Message{Role: "assistant", Content: blocks})
 		default:
@@ -401,7 +401,7 @@ func (bridge *Bridge) prependThinking(modelAlias string, messages []anthropic.Me
 		prependThinkingBlock(&messages, pendingReasoningText)
 		return messages, ""
 	}
-	messages = bridge.exts.PrependThinkingToMessages(modelAlias, messages, toolCallID, extData)
+	messages = bridge.plugins.PrependThinkingToMessages(modelAlias, messages, toolCallID, extData)
 	return messages, ""
 }
 

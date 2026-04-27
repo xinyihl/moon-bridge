@@ -15,7 +15,7 @@ import (
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
-	"moonbridge/internal/extension"
+	"moonbridge/internal/plugin"
 	"moonbridge/internal/extensions/websearchinjected"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
@@ -40,7 +40,7 @@ type Config struct {
 	TraceErrors      io.Writer
 	Stats            *stats.SessionStats
 	AppConfig        config.Config // full app config for per-provider resolution
-	Extensions       *extension.Registry
+	Plugins          *plugin.Registry
 }
 
 type Server struct {
@@ -55,7 +55,7 @@ type Server struct {
 	sessionsMu  sync.Mutex
 	sessions    map[string]serverSession
 	appConfig   config.Config
-	extensions  *extension.Registry
+	plugins     *plugin.Registry
 }
 
 type serverSession struct {
@@ -77,7 +77,7 @@ func New(cfg Config) *Server {
 		mux:         http.NewServeMux(),
 		sessions:    map[string]serverSession{},
 		appConfig:   cfg.AppConfig,
-		extensions:  cfg.Extensions,
+		plugins:     cfg.Plugins,
 	}
 	server.mux.HandleFunc("/v1/responses", server.handleResponses)
 	server.mux.HandleFunc("/responses", server.handleResponses)
@@ -401,7 +401,7 @@ func (server *Server) sessionForRequest(request *http.Request) *session.Session 
 	key := sessionKeyFromRequest(request)
 	if key == "" {
 		sess := session.New()
-		sess.InitExtensions(server.extensions.NewSessionData())
+		sess.InitExtensions(server.plugins.NewSessionData())
 		return sess
 	}
 
@@ -417,7 +417,7 @@ func (server *Server) sessionForRequest(request *http.Request) *session.Session 
 	}
 
 	sess := session.NewWithID(key)
-	sess.InitExtensions(server.extensions.NewSessionData())
+	sess.InitExtensions(server.plugins.NewSessionData())
 	server.sessions[key] = serverSession{sess: sess, lastUsed: now}
 	return sess
 }

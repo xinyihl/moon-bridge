@@ -36,7 +36,7 @@ func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEv
 		webSearchInputs:         map[int]string{},
 		itemIDs:                 map[int]string{},
 		outputIndexes:           map[int]int{},
-		extStreamStates:         bridge.exts.NewStreamStates(model),
+		extStreamStates:         bridge.plugins.NewStreamStates(model),
 	}
 	var converted []openai.StreamEvent
 	for _, event := range events {
@@ -45,7 +45,7 @@ func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEv
 
 	// Let extensions persist stream state back to the session.
 	if sess != nil {
-		bridge.exts.OnStreamComplete(model, converter.extStreamStates, converter.response.OutputText, sess.ExtensionData)
+		bridge.plugins.OnStreamComplete(model, converter.extStreamStates, converter.response.OutputText, sess.ExtensionData)
 	}
 
 	return converted
@@ -155,7 +155,7 @@ func (converter *streamConverter) resetBlockState(index int) {
 	delete(converter.webSearchInputs, index)
 	delete(converter.itemIDs, index)
 	delete(converter.outputIndexes, index)
-	converter.bridge.exts.ResetStreamBlock(converter.model, index, converter.extStreamStates)
+	converter.bridge.plugins.ResetStreamBlock(converter.model, index, converter.extStreamStates)
 }
 
 func (converter *streamConverter) hasOutput(index int) bool {

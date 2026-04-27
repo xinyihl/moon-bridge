@@ -7,7 +7,7 @@ import (
 	"moonbridge/internal/bridge"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/config"
-	"moonbridge/internal/extension"
+	"moonbridge/internal/plugin"
 	deepseekv4 "moonbridge/internal/extensions/deepseek_v4"
 	"moonbridge/internal/openai"
 )
@@ -237,9 +237,9 @@ func TestToAnthropicAppliesDeepSeekV4OnlyForRoutedProvider(t *testing.T) {
 		},
 		Cache: config.CacheConfig{Mode: "off"},
 	}
-	exts := extension.NewRegistry()
-	exts.Register(deepseekv4.NewHook(cfg.DeepSeekV4ForModel))
-	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), exts)
+	plugins := plugin.NewRegistry(nil)
+	plugins.Register(deepseekv4.NewPlugin(cfg.DeepSeekV4ForModel))
+	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), plugins)
 	temperature := 0.2
 	topP := 0.9
 	base := openai.ResponsesRequest{

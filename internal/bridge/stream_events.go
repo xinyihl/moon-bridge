@@ -16,7 +16,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 		return nil
 	}
 	converter.resetBlockState(index)
-	if converter.bridge.exts.OnStreamBlockStart(converter.model, index, block, converter.extStreamStates) {
+	if converter.bridge.plugins.OnStreamBlockStart(converter.model, index, block, converter.extStreamStates) {
 		return nil
 	}
 	switch block.Type {
@@ -36,7 +36,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 				Action: localShellActionFromRaw(block.Input),
 			}
 			converter.itemIDs[index] = item.ID
-			converter.bridge.exts.OnStreamToolCall(converter.model, block.ID, converter.extStreamStates)
+			converter.bridge.plugins.OnStreamToolCall(converter.model, block.ID, converter.extStreamStates)
 			converter.addOutput(index, item)
 			return append(events, converter.outputItem("response.output_item.added", index, item))
 		}
@@ -55,7 +55,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 			if len(block.Input) > 0 && string(block.Input) != "{}" {
 				converter.customToolInitialInputs[index] = string(block.Input)
 			}
-			converter.bridge.exts.OnStreamToolCall(converter.model, block.ID, converter.extStreamStates)
+			converter.bridge.plugins.OnStreamToolCall(converter.model, block.ID, converter.extStreamStates)
 			converter.addOutput(index, item)
 			return append(events, converter.outputItem("response.output_item.added", index, item))
 		}
@@ -70,7 +70,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 			Status:    "in_progress",
 		}
 		converter.itemIDs[index] = item.ID
-		converter.bridge.exts.OnStreamToolCall(converter.model, block.ID, converter.extStreamStates)
+		converter.bridge.plugins.OnStreamToolCall(converter.model, block.ID, converter.extStreamStates)
 		converter.addOutput(index, item)
 		return append(events, converter.outputItem("response.output_item.added", index, item))
 	case "server_tool_use":
@@ -86,7 +86,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 
 func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent) []openai.StreamEvent {
 	index := event.Index
-	if converter.bridge.exts.OnStreamBlockDelta(converter.model, index, event.Delta, converter.extStreamStates) {
+	if converter.bridge.plugins.OnStreamBlockDelta(converter.model, index, event.Delta, converter.extStreamStates) {
 		return nil
 	}
 	switch event.Delta.Type {
@@ -164,7 +164,7 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 
 func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) []openai.StreamEvent {
 	index := event.Index
-	if consumed, reasoningText := converter.bridge.exts.OnStreamBlockStop(converter.model, index, converter.extStreamStates); consumed {
+	if consumed, reasoningText := converter.bridge.plugins.OnStreamBlockStop(converter.model, index, converter.extStreamStates); consumed {
 		converter.pendingReasoningText = reasoningText
 		return nil
 	}
