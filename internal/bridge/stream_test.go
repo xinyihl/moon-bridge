@@ -669,8 +669,9 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ToAnthropic(, nil) missing cache error = %v", err)
 	}
-	if got := convertedMissing.Messages[1].Content[0].Type; got == "thinking" {
-		t.Fatalf("unexpected thinking injection for uncached tool call: %+v", convertedMissing.Messages[1].Content)
+	missingAssistant := convertedMissing.Messages[1]
+	if len(missingAssistant.Content) != 2 || missingAssistant.Content[0].Type != "thinking" || missingAssistant.Content[0].Thinking != "" {
+		t.Fatalf("fallback thinking block = %+v", missingAssistant.Content)
 	}
 }
 
@@ -700,21 +701,25 @@ func TestDeepSeekSignatureOnlyThinkingIsReinjectedForToolCalls(t *testing.T) {
 	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", bridge.ConversionContext{}, sess)
 
 	completed := streamLifecycleResponse(t, convertedEvents, "response.completed")
-	// Signature-only thinking has empty text, so no reasoning item should be emitted.
-	if len(completed.Output) != 1 || completed.Output[0].Type != "function_call" {
+	if len(completed.Output) != 2 || completed.Output[0].Type != "reasoning" || completed.Output[1].Type != "function_call" {
 		t.Fatalf("completed output = %+v", completed.Output)
 	}
+	if len(completed.Output[0].Summary) != 1 || !strings.HasPrefix(completed.Output[0].Summary[0].Text, "moonbridge:deepseek_v4_thinking:v1:") {
+		t.Fatalf("signature reasoning summary = %+v", completed.Output[0])
+	}
 
-	// Session-based follow-up (no reasoning item in input — tests session state).
+	// Resume-style follow-up replays the reasoning item; this must work without
+	// the original in-memory session state.
 	followup := openai.ResponsesRequest{
 		Model: "gpt-test",
 		Input: json.RawMessage(`[
 			{"role":"user","content":[{"type":"input_text","text":"inspect"}],"type":"message"},
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"` + completed.Output[0].Summary[0].Text + `"}]},
 			{"arguments":"{\"cmd\":\"ls\"}","call_id":"call_ls","name":"exec_command","type":"function_call"},
 			{"call_id":"call_ls","output":"README.md\n","type":"function_call_output"}
 		]`),
 	}
-	converted, _, err := bridgeUnderTest.ToAnthropic(followup, sess)
+	converted, _, err := bridgeUnderTest.ToAnthropic(followup, nil)
 	if err != nil {
 		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}

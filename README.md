@@ -152,7 +152,7 @@ provider:
 
 ### DeepSeek V4 扩展
 
-在具体 Provider 模型下设置 `deepseek_v4: true` 可启用 DeepSeek V4 专用兼容逻辑，包括 reasoning_content 剥离与重注入、thinking 回放、推理输出展示等。推理档位使用与 Codex 兼容的 `default_reasoning_level` / `supported_reasoning_levels` 元数据表达；Transform 会把请求里的 `reasoning.effort` 映射到 DeepSeek Anthropic 兼容参数 `output_config.effort`，其中 `xhigh` 会映射为 DeepSeek 的 `max`。详见 [docs/deepseek-v4.md](docs/deepseek-v4.md)。
+在具体 Provider 模型下设置 `deepseek_v4: true` 可启用 DeepSeek V4 专用兼容逻辑，包括 reasoning_content 剥离与重注入、thinking 回放、推理输出展示等。推理档位使用与 Codex 兼容的 `default_reasoning_level` / `supported_reasoning_levels` 元数据表达；Transform 会把请求里的 `reasoning.effort` 映射到 DeepSeek Anthropic 兼容参数 `output_config.effort`，其中 `xhigh` 会映射为 DeepSeek 的 `max`。流式 signature-only thinking 会编码进 Codex 可回放的 `reasoning.summary`，旧历史缺少 reasoning/缓存时只在请求侧补空 `thinking` block，不生成空 summary。详见 [docs/deepseek-v4.md](docs/deepseek-v4.md)。
 
 ### 日志与系统提示
 

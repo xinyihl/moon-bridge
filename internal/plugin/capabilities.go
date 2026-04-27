@@ -102,10 +102,16 @@ type SessionStateProvider interface {
 	NewSessionState() any
 }
 
-// ThinkingPrepender injects cached thinking blocks into messages.
-// This is used by extensions that need to restore thinking context
-// (e.g. DeepSeek V4 thinking cache).
+// ThinkingPrepender restores provider-specific thinking blocks into request
+// history. The bridge only passes OpenAI reasoning summaries and session state;
+// plugins decide how to decode, cache, or fall back for their provider.
 type ThinkingPrepender interface {
-	PrependThinkingForToolUse(messages []anthropic.Message, toolCallID string, sessionState any) []anthropic.Message
-	PrependThinkingForAssistant(blocks []anthropic.ContentBlock, sessionState any) []anthropic.ContentBlock
+	PrependThinkingForToolUse(messages []anthropic.Message, toolCallID string, pendingSummary []openai.ReasoningItemSummary, sessionState any) []anthropic.Message
+	PrependThinkingForAssistant(blocks []anthropic.ContentBlock, pendingSummary []openai.ReasoningItemSummary, sessionState any) []anthropic.ContentBlock
+}
+
+// ReasoningExtractor reconstructs provider-specific thinking blocks from
+// OpenAI Responses reasoning summaries.
+type ReasoningExtractor interface {
+	ExtractThinkingBlock(ctx *RequestContext, summary []openai.ReasoningItemSummary) (anthropic.ContentBlock, bool)
 }

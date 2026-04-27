@@ -2,12 +2,21 @@ package deepseekv4
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"sync"
 
 	"moonbridge/internal/anthropic"
 )
+
+const persistedThinkingSummaryPrefix = "moonbridge:deepseek_v4_thinking:v1:"
+
+type persistedThinkingSummary struct {
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature,omitempty"`
+}
 
 type State struct {
 	mu          sync.Mutex
@@ -117,15 +126,25 @@ func (state *State) PrependCachedForToolUse(messages *[]anthropic.Message, toolC
 	if !ok {
 		return
 	}
+	PrependThinkingBlockForToolUse(messages, block)
+}
+
+func PrependRequiredThinkingForToolUse(messages *[]anthropic.Message) bool {
+	return PrependThinkingBlockForToolUse(messages, RequiredThinkingBlock())
+}
+
+func PrependThinkingBlockForToolUse(messages *[]anthropic.Message, block anthropic.ContentBlock) bool {
+	block = normalizeThinkingBlock(block)
 	lastIndex := len(*messages) - 1
 	if lastIndex >= 0 && (*messages)[lastIndex].Role == "assistant" {
 		if HasThinkingBlock((*messages)[lastIndex].Content) {
-			return
+			return false
 		}
 		(*messages)[lastIndex].Content = append([]anthropic.ContentBlock{block}, (*messages)[lastIndex].Content...)
-		return
+		return true
 	}
 	*messages = append(*messages, anthropic.Message{Role: "assistant", Content: []anthropic.ContentBlock{block}})
+	return true
 }
 
 func (state *State) PrependCachedForAssistantText(blocks []anthropic.ContentBlock) []anthropic.ContentBlock {
@@ -137,6 +156,17 @@ func (state *State) PrependCachedForAssistantText(blocks []anthropic.ContentBloc
 		return blocks
 	}
 	return append([]anthropic.ContentBlock{block}, blocks...)
+}
+
+func PrependRequiredThinkingForAssistantText(blocks []anthropic.ContentBlock) ([]anthropic.ContentBlock, bool) {
+	return PrependThinkingBlockForAssistantText(blocks, RequiredThinkingBlock())
+}
+
+func PrependThinkingBlockForAssistantText(blocks []anthropic.ContentBlock, block anthropic.ContentBlock) ([]anthropic.ContentBlock, bool) {
+	if HasThinkingBlock(blocks) {
+		return blocks, false
+	}
+	return append([]anthropic.ContentBlock{normalizeThinkingBlock(block)}, blocks...), true
 }
 
 func (stream *StreamState) Start(index int, block *anthropic.ContentBlock) bool {
@@ -164,12 +194,11 @@ func (stream *StreamState) Delta(index int, delta anthropic.StreamDelta) bool {
 	}
 }
 
-
 func (stream *StreamState) CompletedThinkingText() string {
 	if stream == nil {
 		return ""
 	}
-	return stream.completedThinking.Thinking
+	return EncodeThinkingSummary(stream.completedThinking)
 }
 
 func (stream *StreamState) Stop(index int) bool {
@@ -231,11 +260,60 @@ func (state *State) pruneLocked() {
 
 func HasThinkingBlock(blocks []anthropic.ContentBlock) bool {
 	for _, block := range blocks {
-		if hasThinkingPayload(block) {
+		if block.Type == "thinking" {
 			return true
 		}
 	}
 	return false
+}
+
+func RequiredThinkingBlock() anthropic.ContentBlock {
+	return anthropic.ContentBlock{Type: "thinking", Thinking: ""}
+}
+
+func EncodeThinkingSummary(block anthropic.ContentBlock) string {
+	block = normalizeThinkingBlock(block)
+	if block.Thinking != "" {
+		return block.Thinking
+	}
+	if block.Signature == "" {
+		return ""
+	}
+	payload, err := json.Marshal(persistedThinkingSummary{
+		Thinking:  block.Thinking,
+		Signature: block.Signature,
+	})
+	if err != nil {
+		return ""
+	}
+	return persistedThinkingSummaryPrefix + base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func DecodeThinkingSummary(text string) (anthropic.ContentBlock, bool) {
+	if text == "" {
+		return anthropic.ContentBlock{}, false
+	}
+	if !strings.HasPrefix(text, persistedThinkingSummaryPrefix) {
+		return anthropic.ContentBlock{Type: "thinking", Thinking: text}, true
+	}
+	encoded := strings.TrimPrefix(text, persistedThinkingSummaryPrefix)
+	payload, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return anthropic.ContentBlock{Type: "thinking", Thinking: text}, true
+	}
+	var decoded persistedThinkingSummary
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return anthropic.ContentBlock{Type: "thinking", Thinking: text}, true
+	}
+	block := anthropic.ContentBlock{
+		Type:      "thinking",
+		Thinking:  decoded.Thinking,
+		Signature: decoded.Signature,
+	}
+	if !hasThinkingPayload(block) {
+		return anthropic.ContentBlock{}, false
+	}
+	return block, true
 }
 
 func hasThinkingPayload(block anthropic.ContentBlock) bool {

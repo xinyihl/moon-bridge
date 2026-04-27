@@ -14,16 +14,16 @@ import (
 
 type testThinkingPrepender struct {
 	testPlugin
-	prependedToolUse  bool
+	prependedToolUse   bool
 	prependedAssistant bool
 }
 
-func (p *testThinkingPrepender) PrependThinkingForToolUse(msgs []anthropic.Message, toolCallID string, sessionState any) []anthropic.Message {
+func (p *testThinkingPrepender) PrependThinkingForToolUse(msgs []anthropic.Message, toolCallID string, pendingSummary []openai.ReasoningItemSummary, sessionState any) []anthropic.Message {
 	p.prependedToolUse = true
 	return append(msgs, anthropic.Message{Role: "assistant", Content: []anthropic.ContentBlock{{Type: "thinking", Thinking: "cached:" + toolCallID}}})
 }
 
-func (p *testThinkingPrepender) PrependThinkingForAssistant(blocks []anthropic.ContentBlock, sessionState any) []anthropic.ContentBlock {
+func (p *testThinkingPrepender) PrependThinkingForAssistant(blocks []anthropic.ContentBlock, pendingSummary []openai.ReasoningItemSummary, sessionState any) []anthropic.ContentBlock {
 	p.prependedAssistant = true
 	return append([]anthropic.ContentBlock{{Type: "thinking", Thinking: "cached_assistant"}}, blocks...)
 }
@@ -34,7 +34,7 @@ func TestCompatPrependThinkingToMessages(t *testing.T) {
 	r.Register(tp)
 
 	msgs := []anthropic.Message{{Role: "user", Content: []anthropic.ContentBlock{{Type: "text", Text: "hi"}}}}
-	result := r.PrependThinkingToMessages("model", msgs, "call_123", map[string]any{"tp": "state"})
+	result := r.PrependThinkingToMessages("model", msgs, "call_123", nil, map[string]any{"tp": "state"})
 	if !tp.prependedToolUse {
 		t.Fatal("PrependThinkingForToolUse not called")
 	}
@@ -49,7 +49,7 @@ func TestCompatPrependThinkingToAssistant(t *testing.T) {
 	r.Register(tp)
 
 	blocks := []anthropic.ContentBlock{{Type: "text", Text: "hello"}}
-	result := r.PrependThinkingToAssistant("model", blocks, map[string]any{"tp": "state"})
+	result := r.PrependThinkingToAssistant("model", blocks, nil, map[string]any{"tp": "state"})
 	if !tp.prependedAssistant {
 		t.Fatal("PrependThinkingForAssistant not called")
 	}
@@ -64,7 +64,7 @@ func TestCompatPrependThinkingDisabled(t *testing.T) {
 	r.Register(tp)
 
 	msgs := []anthropic.Message{{Role: "user"}}
-	result := r.PrependThinkingToMessages("model", msgs, "call_1", nil)
+	result := r.PrependThinkingToMessages("model", msgs, "call_1", nil, nil)
 	if tp.prependedToolUse {
 		t.Fatal("should not call disabled plugin")
 	}
@@ -390,8 +390,8 @@ func TestRegistryNilSafeCompat(t *testing.T) {
 	var r *plugin.Registry
 	r.PostConvertRequest("m", &anthropic.MessageRequest{}, nil)
 	r.RememberResponseContent("m", nil, nil)
-	r.PrependThinkingToMessages("m", nil, "", nil)
-	r.PrependThinkingToAssistant("m", nil, nil)
+	r.PrependThinkingToMessages("m", nil, "", nil, nil)
+	r.PrependThinkingToAssistant("m", nil, nil, nil)
 	r.ExtractReasoningFromSummary("m", nil)
 	r.OnStreamBlockStart("m", 0, nil, nil)
 	r.OnStreamBlockDelta("m", 0, anthropic.StreamDelta{}, nil)
@@ -406,9 +406,11 @@ type multiCapPlugin struct {
 	testPlugin
 }
 
-func (p *multiCapPlugin) PreprocessInput(_ *plugin.RequestContext, raw json.RawMessage) json.RawMessage { return raw }
-func (p *multiCapPlugin) MutateRequest(_ *plugin.RequestContext, _ *anthropic.MessageRequest)          {}
-func (p *multiCapPlugin) InjectTools(_ *plugin.RequestContext) []anthropic.Tool                       { return nil }
+func (p *multiCapPlugin) PreprocessInput(_ *plugin.RequestContext, raw json.RawMessage) json.RawMessage {
+	return raw
+}
+func (p *multiCapPlugin) MutateRequest(_ *plugin.RequestContext, _ *anthropic.MessageRequest) {}
+func (p *multiCapPlugin) InjectTools(_ *plugin.RequestContext) []anthropic.Tool               { return nil }
 func (p *multiCapPlugin) RewriteMessages(_ *plugin.RequestContext, m []anthropic.Message) []anthropic.Message {
 	return m
 }
@@ -416,19 +418,19 @@ func (p *multiCapPlugin) WrapProvider(_ *plugin.RequestContext, prov any) any { 
 func (p *multiCapPlugin) FilterContent(_ *plugin.RequestContext, _ anthropic.ContentBlock) (bool, []openai.OutputItem) {
 	return false, nil
 }
-func (p *multiCapPlugin) PostProcessResponse(_ *plugin.RequestContext, _ *openai.Response) {}
-func (p *multiCapPlugin) RememberContent(_ *plugin.RequestContext, _ []anthropic.ContentBlock)         {}
-func (p *multiCapPlugin) NewStreamState() any                                                         { return nil }
+func (p *multiCapPlugin) PostProcessResponse(_ *plugin.RequestContext, _ *openai.Response)     {}
+func (p *multiCapPlugin) RememberContent(_ *plugin.RequestContext, _ []anthropic.ContentBlock) {}
+func (p *multiCapPlugin) NewStreamState() any                                                  { return nil }
 func (p *multiCapPlugin) OnStreamEvent(_ *plugin.StreamContext, _ plugin.StreamEvent) (bool, []openai.StreamEvent) {
 	return false, nil
 }
-func (p *multiCapPlugin) OnStreamComplete(_ *plugin.StreamContext, _ string)                           {}
-func (p *multiCapPlugin) TransformError(_ *plugin.RequestContext, msg string) string                    { return msg }
-func (p *multiCapPlugin) NewSessionState() any                                                         { return nil }
-func (p *multiCapPlugin) PrependThinkingForToolUse(m []anthropic.Message, _ string, _ any) []anthropic.Message {
+func (p *multiCapPlugin) OnStreamComplete(_ *plugin.StreamContext, _ string)         {}
+func (p *multiCapPlugin) TransformError(_ *plugin.RequestContext, msg string) string { return msg }
+func (p *multiCapPlugin) NewSessionState() any                                       { return nil }
+func (p *multiCapPlugin) PrependThinkingForToolUse(m []anthropic.Message, _ string, _ []openai.ReasoningItemSummary, _ any) []anthropic.Message {
 	return m
 }
-func (p *multiCapPlugin) PrependThinkingForAssistant(b []anthropic.ContentBlock, _ any) []anthropic.ContentBlock {
+func (p *multiCapPlugin) PrependThinkingForAssistant(b []anthropic.ContentBlock, _ []openai.ReasoningItemSummary, _ any) []anthropic.ContentBlock {
 	return b
 }
 

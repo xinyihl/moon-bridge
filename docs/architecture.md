@@ -181,7 +181,7 @@ OpenAI Responses 协议 DTO 定义。包含 `ResponsesRequest`、`Response`、`O
 
 Provider 扩展模块。当前包含：
 
-- `deepseek_v4`：按模型级别配置启用（`models.<name>.deepseek_v4: true`），处理 reasoning_content 剥离、thinking 回放、流式 thinking 跟踪等 DeepSeek 特有行为；推理强度使用标准 `reasoning.effort`，其中 `xhigh` 会写入 DeepSeek `output_config.effort=max`。
+- `deepseek_v4`：按模型级别配置启用（`models.<name>.deepseek_v4: true`），处理 reasoning_content 剥离、thinking 回放、流式 thinking 跟踪等 DeepSeek 特有行为；推理强度使用标准 `reasoning.effort`，其中 `xhigh` 会写入 DeepSeek `output_config.effort=max`。signature-only thinking 会编码进 Codex 可回放的 `reasoning.summary`；旧历史缺失 reasoning/缓存时，仅在请求侧补空 `thinking` block 兜底，不生成空 summary。
 - `websearch` / `websearchinjected`：当 web search 配置为 `injected` 时，向模型注入 `tavily_search` / `firecrawl_fetch` 工具，并在服务端执行搜索循环。
 
 其他 Provider 特有逻辑可直接在此目录下新增子包。

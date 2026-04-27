@@ -46,17 +46,18 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 	messages := make([]anthropic.Message, 0, len(items))
 	system := make([]anthropic.ContentBlock, 0)
 	seenToolHistory := false
-	pendingReasoningText := ""
+	var pendingReasoningSummary []openai.ReasoningItemSummary
 	for _, item := range items {
 		switch {
 		case item.Phase == "commentary":
 			continue
 		case item.Type == "reasoning":
-			pendingReasoningText = bridge.plugins.ExtractReasoningFromSummary(modelAlias, item.Summary)
+			pendingReasoningSummary = item.Summary
 			continue
 		case item.Type == "function_call":
 			seenToolHistory = true
-			messages, pendingReasoningText = bridge.prependThinking(modelAlias, messages, pendingReasoningText, firstNonEmpty(item.CallID, item.ID), extData)
+			messages = bridge.applyReasoningBeforeToolUse(modelAlias, messages, pendingReasoningSummary, firstNonEmpty(item.CallID, item.ID), extData)
+			pendingReasoningSummary = nil
 			toolName := context.AnthropicFunctionToolName(item.Namespace, item.Name)
 			toolInput := toolInputFromArguments(item.Arguments)
 			appendAssistantBlock(&messages, anthropic.ContentBlock{
@@ -67,7 +68,8 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			})
 		case item.Type == "custom_tool_call":
 			seenToolHistory = true
-			messages, pendingReasoningText = bridge.prependThinking(modelAlias, messages, pendingReasoningText, firstNonEmpty(item.CallID, item.ID), extData)
+			messages = bridge.applyReasoningBeforeToolUse(modelAlias, messages, pendingReasoningSummary, firstNonEmpty(item.CallID, item.ID), extData)
+			pendingReasoningSummary = nil
 			toolName := item.Name
 			toolInput := json.RawMessage(item.Arguments)
 			if strings.TrimSpace(item.Arguments) == "" {
@@ -83,7 +85,8 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			})
 		case item.Type == "local_shell_call":
 			seenToolHistory = true
-			messages, pendingReasoningText = bridge.prependThinking(modelAlias, messages, pendingReasoningText, firstNonEmpty(item.CallID, item.ID), extData)
+			messages = bridge.applyReasoningBeforeToolUse(modelAlias, messages, pendingReasoningSummary, firstNonEmpty(item.CallID, item.ID), extData)
+			pendingReasoningSummary = nil
 			appendAssistantBlock(&messages, anthropic.ContentBlock{
 				Type:  "tool_use",
 				ID:    firstNonEmpty(item.CallID, item.ID),
@@ -97,6 +100,7 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 				ToolUseID: firstNonEmpty(item.CallID, item.ID),
 				Content:   item.Output,
 			})
+			pendingReasoningSummary = nil
 		case item.Type == "web_search_call":
 			continue
 		case item.Role == "system" || item.Role == "developer":
@@ -106,20 +110,14 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context ConversionContex
 			if len(blocks) == 0 || isEmptyWebSearchPreludeBlocks(blocks) {
 				continue
 			}
-			// Inject cached thinking block from type: "reasoning" input item.
-			if pendingReasoningText != "" {
-				blocks = append([]anthropic.ContentBlock{{
-					Type:     "thinking",
-					Thinking: pendingReasoningText,
-				}}, blocks...)
-				pendingReasoningText = ""
-			} else if seenToolHistory {
-				blocks = bridge.plugins.PrependThinkingToAssistant(modelAlias, blocks, extData)
+			if len(pendingReasoningSummary) > 0 || seenToolHistory {
+				blocks = bridge.plugins.PrependThinkingToAssistant(modelAlias, blocks, pendingReasoningSummary, extData)
+				pendingReasoningSummary = nil
 			}
 			messages = append(messages, anthropic.Message{Role: "assistant", Content: blocks})
 		default:
 			// New turn boundary: clear stale reasoning from the previous round.
-			pendingReasoningText = ""
+			pendingReasoningSummary = nil
 			role := item.Role
 			if role == "" {
 				role = "user"
@@ -395,16 +393,11 @@ func lastCacheableContentIndex(content []anthropic.ContentBlock) int {
 	}
 	return -1
 }
-// prependThinking handles thinking block injection before tool_result messages.
-// If pendingReasoningText is non-empty, it prepends a thinking block directly.
-// Otherwise, it delegates to extensions for cached thinking injection.
-func (bridge *Bridge) prependThinking(modelAlias string, messages []anthropic.Message, pendingReasoningText string, toolCallID string, extData map[string]any) ([]anthropic.Message, string) {
-	if pendingReasoningText != "" {
-		prependThinkingBlock(&messages, pendingReasoningText)
-		return messages, pendingReasoningText
-	}
-	messages = bridge.plugins.PrependThinkingToMessages(modelAlias, messages, toolCallID, extData)
-	return messages, ""
+
+// applyReasoningBeforeToolUse delegates provider-specific reasoning replay to
+// plugins before emitting a tool_use message.
+func (bridge *Bridge) applyReasoningBeforeToolUse(modelAlias string, messages []anthropic.Message, pendingSummary []openai.ReasoningItemSummary, toolCallID string, extData map[string]any) []anthropic.Message {
+	return bridge.plugins.PrependThinkingToMessages(modelAlias, messages, toolCallID, pendingSummary, extData)
 }
 
 type inputItem struct {
@@ -546,30 +539,4 @@ func parseStopSequences(raw json.RawMessage) []string {
 		return multiple
 	}
 	return nil
-}
-
-// prependThinkingBlock adds a thinking block to the last assistant message,
-// or creates a new assistant message if none exists.
-func prependThinkingBlock(messages *[]anthropic.Message, thinkingText string) {
-	if len(*messages) > 0 && (*messages)[len(*messages)-1].Role == "assistant" {
-		last := &(*messages)[len(*messages)-1]
-		// Skip if the assistant message already has a thinking block (parallel tool calls).
-		for _, block := range last.Content {
-			if block.Type == "thinking" {
-				return
-			}
-		}
-		last.Content = append([]anthropic.ContentBlock{{
-			Type:     "thinking",
-			Thinking: thinkingText,
-		}}, last.Content...)
-	} else {
-		*messages = append(*messages, anthropic.Message{
-			Role: "assistant",
-			Content: []anthropic.ContentBlock{{
-				Type:     "thinking",
-				Thinking: thinkingText,
-			}},
-		})
-	}
 }

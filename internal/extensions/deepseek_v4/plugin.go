@@ -2,6 +2,7 @@ package deepseekv4
 
 import (
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	"moonbridge/internal/anthropic"
@@ -18,6 +19,7 @@ type EnabledFunc func(modelAlias string) bool
 type DSPlugin struct {
 	plugin.BasePlugin
 	isEnabled EnabledFunc
+	logger    *slog.Logger
 }
 
 // NewPlugin creates a DeepSeek V4 plugin.
@@ -27,6 +29,10 @@ func NewPlugin(isEnabled EnabledFunc) *DSPlugin {
 
 func (p *DSPlugin) Name() string                      { return PluginName }
 func (p *DSPlugin) EnabledForModel(model string) bool { return p.isEnabled(model) }
+func (p *DSPlugin) Init(ctx plugin.PluginContext) error {
+	p.logger = ctx.Logger
+	return nil
+}
 
 // --- InputPreprocessor ---
 
@@ -52,21 +58,51 @@ func (p *DSPlugin) RewriteMessages(ctx *plugin.RequestContext, messages []anthro
 
 // --- ThinkingPrepender ---
 
-func (p *DSPlugin) PrependThinkingForToolUse(messages []anthropic.Message, toolCallID string, sessionState any) []anthropic.Message {
-	state, _ := sessionState.(*State)
-	if state == nil {
+func (p *DSPlugin) PrependThinkingForToolUse(messages []anthropic.Message, toolCallID string, pendingSummary []openai.ReasoningItemSummary, sessionState any) []anthropic.Message {
+	if block, ok := p.thinkingBlockFromSummary(pendingSummary); ok {
+		PrependThinkingBlockForToolUse(&messages, block)
 		return messages
 	}
-	state.PrependCachedForToolUse(&messages, toolCallID)
+	state, _ := sessionState.(*State)
+	if state != nil {
+		state.PrependCachedForToolUse(&messages, toolCallID)
+	}
+	if PrependRequiredThinkingForToolUse(&messages) {
+		p.warnRequiredThinkingFallback("tool_use", "tool_call_id", toolCallID)
+	}
 	return messages
 }
 
-func (p *DSPlugin) PrependThinkingForAssistant(blocks []anthropic.ContentBlock, sessionState any) []anthropic.ContentBlock {
-	state, _ := sessionState.(*State)
-	if state == nil {
+func (p *DSPlugin) PrependThinkingForAssistant(blocks []anthropic.ContentBlock, pendingSummary []openai.ReasoningItemSummary, sessionState any) []anthropic.ContentBlock {
+	if block, ok := p.thinkingBlockFromSummary(pendingSummary); ok {
+		blocks, _ = PrependThinkingBlockForAssistantText(blocks, block)
 		return blocks
 	}
-	return state.PrependCachedForAssistantText(blocks)
+	state, _ := sessionState.(*State)
+	if state != nil {
+		blocks = state.PrependCachedForAssistantText(blocks)
+	}
+	blocks, inserted := PrependRequiredThinkingForAssistantText(blocks)
+	if inserted {
+		p.warnRequiredThinkingFallback("assistant_text", "content_blocks", len(blocks)-1)
+	}
+	return blocks
+}
+
+func (p *DSPlugin) warnRequiredThinkingFallback(target string, attrs ...any) {
+	if p.logger == nil {
+		return
+	}
+	args := []any{"target", target}
+	args = append(args, attrs...)
+	p.logger.Warn("DeepSeek V4 历史缺少可回放 thinking，已在请求侧补空 thinking block", args...)
+}
+
+func (p *DSPlugin) thinkingBlockFromSummary(summary []openai.ReasoningItemSummary) (anthropic.ContentBlock, bool) {
+	if len(summary) == 0 {
+		return anthropic.ContentBlock{}, false
+	}
+	return p.ExtractThinkingBlock(&plugin.RequestContext{}, summary)
 }
 
 // --- ContentFilter ---
@@ -74,7 +110,10 @@ func (p *DSPlugin) PrependThinkingForAssistant(blocks []anthropic.ContentBlock, 
 func (p *DSPlugin) FilterContent(_ *plugin.RequestContext, block anthropic.ContentBlock) (skip bool, extra []openai.OutputItem) {
 	switch block.Type {
 	case "thinking", "reasoning_content":
-		text := ExtractReasoningContent([]anthropic.ContentBlock{block})
+		text := EncodeThinkingSummary(block)
+		if text == "" {
+			text = ExtractReasoningContent([]anthropic.ContentBlock{block})
+		}
 		if text != "" {
 			extra = append(extra, openai.OutputItem{
 				Type: "reasoning",
@@ -152,6 +191,20 @@ func (p *DSPlugin) TransformError(_ *plugin.RequestContext, msg string) string {
 	return msg
 }
 
+// --- ReasoningExtractor ---
+
+func (p *DSPlugin) ExtractThinkingBlock(_ *plugin.RequestContext, summary []openai.ReasoningItemSummary) (anthropic.ContentBlock, bool) {
+	for _, item := range summary {
+		if item.Type != "summary_text" {
+			continue
+		}
+		if block, ok := DecodeThinkingSummary(item.Text); ok {
+			return block, true
+		}
+	}
+	return anthropic.ContentBlock{}, false
+}
+
 // --- SessionStateProvider ---
 
 func (p *DSPlugin) NewSessionState() any {
@@ -170,4 +223,5 @@ var (
 	_ plugin.ErrorTransformer     = (*DSPlugin)(nil)
 	_ plugin.SessionStateProvider = (*DSPlugin)(nil)
 	_ plugin.ThinkingPrepender    = (*DSPlugin)(nil)
+	_ plugin.ReasoningExtractor   = (*DSPlugin)(nil)
 )

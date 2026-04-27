@@ -117,7 +117,7 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 	}
 
 	// Register plugins.
-	plugins := plugin.NewRegistry(nil)
+	plugins := plugin.NewRegistry(logger.L())
 	plugins.Register(deepseekv4.NewPlugin(cfg.DeepSeekV4ForModel))
 	if err := plugins.InitAll(nil); err != nil {
 		return fmt.Errorf("init plugins: %w", err)

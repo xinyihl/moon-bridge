@@ -43,8 +43,9 @@ func (r *Registry) OnResponseContent(model string, block anthropic.ContentBlock)
 	return s, reasoningText
 }
 
-// PrependThinkingToMessages is a compat wrapper for RewriteMessages.
-func (r *Registry) PrependThinkingToMessages(model string, msgs []anthropic.Message, toolCallID string, sessionData map[string]any) []anthropic.Message {
+// PrependThinkingToMessages dispatches provider-specific thinking restoration
+// before a tool_use message.
+func (r *Registry) PrependThinkingToMessages(model string, msgs []anthropic.Message, toolCallID string, pendingSummary []openai.ReasoningItemSummary, sessionData map[string]any) []anthropic.Message {
 	if r == nil {
 		return msgs
 	}
@@ -53,14 +54,15 @@ func (r *Registry) PrependThinkingToMessages(model string, msgs []anthropic.Mess
 			continue
 		}
 		if tp, ok := p.(ThinkingPrepender); ok {
-			msgs = tp.PrependThinkingForToolUse(msgs, toolCallID, sessionData[p.Name()])
+			msgs = tp.PrependThinkingForToolUse(msgs, toolCallID, pendingSummary, sessionData[p.Name()])
 		}
 	}
 	return msgs
 }
 
-// PrependThinkingToAssistant is a compat wrapper.
-func (r *Registry) PrependThinkingToAssistant(model string, blocks []anthropic.ContentBlock, sessionData map[string]any) []anthropic.ContentBlock {
+// PrependThinkingToAssistant dispatches provider-specific thinking restoration
+// before an assistant text message.
+func (r *Registry) PrependThinkingToAssistant(model string, blocks []anthropic.ContentBlock, pendingSummary []openai.ReasoningItemSummary, sessionData map[string]any) []anthropic.ContentBlock {
 	if r == nil {
 		return blocks
 	}
@@ -69,7 +71,7 @@ func (r *Registry) PrependThinkingToAssistant(model string, blocks []anthropic.C
 			continue
 		}
 		if tp, ok := p.(ThinkingPrepender); ok {
-			blocks = tp.PrependThinkingForAssistant(blocks, sessionData[p.Name()])
+			blocks = tp.PrependThinkingForAssistant(blocks, pendingSummary, sessionData[p.Name()])
 		}
 	}
 	return blocks
@@ -77,22 +79,36 @@ func (r *Registry) PrependThinkingToAssistant(model string, blocks []anthropic.C
 
 // ExtractReasoningFromSummary extracts reasoning text from summary items.
 func (r *Registry) ExtractReasoningFromSummary(model string, summary []openai.ReasoningItemSummary) string {
-	if r == nil || len(summary) == 0 {
+	block, ok := r.ExtractThinkingBlockFromSummary(model, summary)
+	if !ok {
 		return ""
 	}
-	// Check if any enabled plugin handles reasoning extraction.
+	return block.Thinking
+}
+
+// ExtractThinkingBlockFromSummary reconstructs a thinking block from reasoning
+// summary items.
+func (r *Registry) ExtractThinkingBlockFromSummary(model string, summary []openai.ReasoningItemSummary) (anthropic.ContentBlock, bool) {
+	if r == nil || len(summary) == 0 {
+		return anthropic.ContentBlock{}, false
+	}
 	for _, p := range r.plugins {
 		if !p.EnabledForModel(model) {
 			continue
 		}
-		// If the plugin is a ContentFilter, it handles reasoning.
-		// For now, just extract from the first summary item if any
-		// plugin is enabled (matching the old behavior).
-		if len(summary) > 0 {
-			return summary[0].Text
+		if extractor, ok := p.(ReasoningExtractor); ok {
+			if block, ok := extractor.ExtractThinkingBlock(&RequestContext{ModelAlias: model}, summary); ok {
+				return block, true
+			}
 		}
+		for _, item := range summary {
+			if item.Text != "" {
+				return anthropic.ContentBlock{Type: "thinking", Thinking: item.Text}, true
+			}
+		}
+		return anthropic.ContentBlock{}, false
 	}
-	return ""
+	return anthropic.ContentBlock{}, false
 }
 
 // OnStreamBlockStart is a compat wrapper.

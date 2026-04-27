@@ -165,7 +165,7 @@ Web search 支持按 Provider 独立配置和判断。每个 Provider 可在 `pr
 当当前模型在 Provider 模型目录中配置 `deepseek_v4: true` 时，桥接器启用 DeepSeek thinking 状态扩展：
 
 - 处理 `reasoning_content` 剥离、thinking 回放和推理输出展示；推理强度使用标准 `reasoning.effort`，其中 `xhigh` 会写入 DeepSeek `output_config.effort=max`。
-- 流式 thinking delta 收集和 signature-only thinking block 保留。
+- 流式 thinking delta 收集和 signature-only thinking block 保留；signature-only thinking 会编码进 Codex 可回放的 `reasoning.summary`，旧历史缺少 reasoning/缓存时只在请求侧补空 `thinking` block。
 - thinking 状态按 Session 隔离，并发请求互不干扰。
 - 请求时移除 `temperature` / `top_p` 以适配 DeepSeek Provider。
 

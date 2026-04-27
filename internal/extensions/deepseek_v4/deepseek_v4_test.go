@@ -1,11 +1,15 @@
 package deepseekv4
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/openai"
+	pluginpkg "moonbridge/internal/plugin"
 )
 
 func TestStripReasoningContentStripsField(t *testing.T) {
@@ -96,5 +100,76 @@ func TestToAnthropicRequestIgnoresUnsupportedReasoningEffort(t *testing.T) {
 	ToAnthropicRequest(&req, map[string]any{"effort": "medium"})
 	if req.OutputConfig != nil {
 		t.Fatalf("OutputConfig = %+v, want nil", req.OutputConfig)
+	}
+}
+
+func TestEncodeDecodeThinkingSummaryPreservesSignatureOnlyBlock(t *testing.T) {
+	encoded := EncodeThinkingSummary(anthropic.ContentBlock{Type: "thinking", Signature: "sig_only"})
+	if encoded == "" {
+		t.Fatal("encoded summary is empty")
+	}
+	decoded, ok := DecodeThinkingSummary(encoded)
+	if !ok {
+		t.Fatal("expected encoded summary to decode")
+	}
+	if decoded.Type != "thinking" || decoded.Thinking != "" || decoded.Signature != "sig_only" {
+		t.Fatalf("decoded block = %+v", decoded)
+	}
+}
+
+func TestPrependThinkingWarnsWhenUsingRequiredFallback(t *testing.T) {
+	var logs bytes.Buffer
+	p := NewPlugin(func(string) bool { return true })
+	err := p.Init(pluginpkg.PluginContext{
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	messages := []anthropic.Message{{
+		Role:    "assistant",
+		Content: []anthropic.ContentBlock{{Type: "tool_use", ID: "call_missing"}},
+	}}
+	got := p.PrependThinkingForToolUse(messages, "call_missing", nil, NewState())
+
+	if got[0].Content[0].Type != "thinking" || got[0].Content[0].Thinking != "" {
+		t.Fatalf("fallback thinking block = %+v", got[0].Content)
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, "补空 thinking block") || !strings.Contains(logText, "tool_call_id=call_missing") {
+		t.Fatalf("warning log = %q", logText)
+	}
+
+	logs.Reset()
+	summary := []openai.ReasoningItemSummary{{
+		Type: "summary_text",
+		Text: EncodeThinkingSummary(anthropic.ContentBlock{Type: "thinking", Signature: "sig_summary"}),
+	}}
+	got = p.PrependThinkingForToolUse([]anthropic.Message{{
+		Role:    "assistant",
+		Content: []anthropic.ContentBlock{{Type: "tool_use", ID: "call_summary"}},
+	}}, "call_summary", summary, NewState())
+
+	if got[0].Content[0].Type != "thinking" || got[0].Content[0].Signature != "sig_summary" {
+		t.Fatalf("summary thinking block = %+v", got[0].Content)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("unexpected warning for summary thinking = %q", logs.String())
+	}
+
+	logs.Reset()
+	state := NewState()
+	state.RememberForToolCalls([]string{"call_cached"}, anthropic.ContentBlock{Type: "thinking", Signature: "sig_cached"})
+	got = p.PrependThinkingForToolUse([]anthropic.Message{{
+		Role:    "assistant",
+		Content: []anthropic.ContentBlock{{Type: "tool_use", ID: "call_cached"}},
+	}}, "call_cached", nil, state)
+
+	if got[0].Content[0].Type != "thinking" || got[0].Content[0].Signature != "sig_cached" {
+		t.Fatalf("cached thinking block = %+v", got[0].Content)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("unexpected warning for cached thinking = %q", logs.String())
 	}
 }
