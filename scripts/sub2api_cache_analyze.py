@@ -63,6 +63,22 @@ def fmt_ratio(v: float | None) -> str:
     return f"{v:.2f}" if v is not None else "N/A"
 
 
+def cost_per_mtok(cost: float, total_tokens: int) -> float | None:
+    """Cost per million tokens."""
+    return (cost / total_tokens * 1_000_000) if total_tokens > 0 else None
+
+
+def fmt_unit_cost(v: float | None) -> Text:
+    if v is None:
+        return Text("N/A", style="dim")
+    s = f"¥{v:.2f}"
+    if v <= 1:
+        return Text(s, style="bold green")
+    if v <= 5:
+        return Text(s, style="yellow")
+    return Text(s, style="red")
+
+
 def build_table(stats: list[dict]) -> Table:
     table = Table(
         title="Cache Usage",
@@ -79,6 +95,7 @@ def build_table(stats: list[dict]) -> Table:
     table.add_column("Cost", justify="right", style="yellow")
     table.add_column("Hit Rate", justify="right")
     table.add_column("R/W Ratio", justify="right")
+    table.add_column("¥/MTok", justify="right")
 
     totals = dict(total=0, inp=0, cr=0, cw=0, out=0, cost=0.0)
 
@@ -99,6 +116,7 @@ def build_table(stats: list[dict]) -> Table:
 
         hit = cache_hit_rate(inp, cr)
         rw = cache_rw_ratio(cr, cw)
+        unit = cost_per_mtok(cost, total)
 
         table.add_row(
             s.get("model", "?"),
@@ -110,11 +128,13 @@ def build_table(stats: list[dict]) -> Table:
             fmt_cost(cost),
             fmt_pct(hit),
             fmt_ratio(rw),
+            fmt_unit_cost(unit),
         )
 
     if len(stats) > 1:
         hit = cache_hit_rate(totals["inp"], totals["cr"])
         rw = cache_rw_ratio(totals["cr"], totals["cw"])
+        unit = cost_per_mtok(totals["cost"], totals["total"])
         table.add_section()
         table.add_row(
             Text("TOTAL", style="bold"),
@@ -126,6 +146,7 @@ def build_table(stats: list[dict]) -> Table:
             fmt_cost(totals["cost"]),
             fmt_pct(hit),
             fmt_ratio(rw),
+            fmt_unit_cost(unit),
         )
 
     return table
