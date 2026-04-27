@@ -171,7 +171,7 @@ tool_timeout_sec = 3600
 也可以让 Moon Bridge 按当前 `config.yml` 生成 Codex 配置片段：
 
 ```bash
-go run ./cmd/moonbridge -print-codex-config moonbridge -codex-base-url http://127.0.0.1:38440/v1
+go run ./cmd/moonbridge -print-codex-config moonbridge -codex-base-url http://127.0.0.1:38440/v1 -codex-home ~/.codex
 ```
 
 设置客户端 API Key（本地 Moon Bridge 不校验，任意占位值即可）：

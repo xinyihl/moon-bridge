@@ -89,19 +89,47 @@ func (server *Server) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 
 // ModelInfo represents a model entry in the OpenAI /v1/models response.
 type ModelInfo struct {
-	ID                         string                    `json:"id"`
-	Object                     string                    `json:"object"`
-	Created                    int64                     `json:"created"`
-	OwnedBy                    string                    `json:"owned_by"`
-	Slug                       string                    `json:"slug,omitempty"`
-	DisplayName                string                    `json:"display_name,omitempty"`
-	Description                string                    `json:"description,omitempty"`
-	ContextWindow              int                       `json:"context_window,omitempty"`
-	MaxContextWindow            int                       `json:"max_context_window,omitempty"`
-	DefaultReasoningLevel      string                    `json:"default_reasoning_level,omitempty"`
-	SupportedReasoningLevels   []ReasoningLevelPresetDTO `json:"supported_reasoning_levels,omitempty"`
-	SupportsReasoningSummaries bool                      `json:"supports_reasoning_summaries,omitempty"`
-	DefaultReasoningSummary    string                    `json:"default_reasoning_summary,omitempty"`
+	Slug                        string                    `json:"slug"`
+	DisplayName                 string                    `json:"display_name"`
+	Description                 string                    `json:"description,omitempty"`
+	DefaultReasoningLevel       string                    `json:"default_reasoning_level,omitempty"`
+	SupportedReasoningLevels    []ReasoningLevelPresetDTO `json:"supported_reasoning_levels"`
+	ShellType                   string                    `json:"shell_type"`
+	Visibility                  string                    `json:"visibility"`
+	SupportedInAPI              bool                      `json:"supported_in_api"`
+	Priority                    int                       `json:"priority"`
+	AdditionalSpeedTiers        []string                  `json:"additional_speed_tiers"`
+	AvailabilityNux             *ModelAvailabilityNux     `json:"availability_nux"`
+	Upgrade                     *ModelInfoUpgrade         `json:"upgrade"`
+	BaseInstructions            string                    `json:"base_instructions"`
+	SupportsReasoningSummaries  bool                      `json:"supports_reasoning_summaries"`
+	DefaultReasoningSummary     string                    `json:"default_reasoning_summary"`
+	SupportVerbosity            bool                      `json:"support_verbosity"`
+	DefaultVerbosity            *string                   `json:"default_verbosity"`
+	ApplyPatchToolType          *string                   `json:"apply_patch_tool_type"`
+	WebSearchToolType           string                    `json:"web_search_tool_type"`
+	TruncationPolicy            TruncationPolicyConfig    `json:"truncation_policy"`
+	SupportsParallelToolCalls   bool                      `json:"supports_parallel_tool_calls"`
+	SupportsImageDetailOriginal bool                      `json:"supports_image_detail_original"`
+	ContextWindow               *int                      `json:"context_window,omitempty"`
+	MaxContextWindow             *int                      `json:"max_context_window,omitempty"`
+	AutoCompactTokenLimit       *int                      `json:"auto_compact_token_limit,omitempty"`
+	EffectiveContextWindowPct   int                       `json:"effective_context_window_percent"`
+	ExperimentalSupportedTools  []string                  `json:"experimental_supported_tools"`
+	InputModalities             []string                  `json:"input_modalities"`
+	SupportsSearchTool          bool                      `json:"supports_search_tool"`
+}
+
+// ModelAvailabilityNux is a placeholder for Codex model availability nux.
+type ModelAvailabilityNux struct{}
+
+// ModelInfoUpgrade is a placeholder for Codex model upgrade info.
+type ModelInfoUpgrade struct{}
+
+// TruncationPolicyConfig matches Codex's truncation_policy field.
+type TruncationPolicyConfig struct {
+	Mode  string `json:"mode"`
+	Limit int64  `json:"limit"`
 }
 
 // ReasoningLevelPresetDTO is the JSON shape Codex expects for reasoning presets.
@@ -121,11 +149,9 @@ func (server *Server) handleModels(writer http.ResponseWriter, request *http.Req
 	}
 	models := server.listModels()
 	resp := struct {
-		Object string      `json:"object"`
-		Data   []ModelInfo `json:"data"`
+		Models []ModelInfo `json:"models"`
 	}{
-		Object: "list",
-		Data:   models,
+		Models: models,
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(writer).Encode(resp)
@@ -135,19 +161,6 @@ func (server *Server) handleModels(writer http.ResponseWriter, request *http.Req
 func (server *Server) listModels() []ModelInfo {
 	seen := make(map[string]bool)
 	var models []ModelInfo
-	now := time.Now().Unix()
-
-	// Direct "provider/upstream_model" entries from provider definitions first.
-	for providerKey, def := range server.appConfig.ProviderDefs {
-		for modelName, meta := range def.Models {
-			id := providerKey + "/" + modelName
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			models = append(models, buildModelInfo(id, providerKey, now, meta))
-		}
-	}
 
 	// Route aliases (processed second so they won't be shadowed by direct entries).
 	for alias, route := range server.appConfig.Routes {
@@ -159,7 +172,7 @@ func (server *Server) listModels() []ModelInfo {
 		if route.Provider != "" {
 			ownedBy = route.Provider
 		}
-		models = append(models, buildModelInfoFromRoute(alias, ownedBy, now, route))
+		models = append(models, BuildModelInfoFromRoute(alias, ownedBy, route))
 	}
 
 	return models
@@ -775,62 +788,63 @@ func (server *Server) resolveRequestOptions(modelAlias string, providerKey strin
 	}
 }
 
-func buildModelInfo(id string, ownedBy string, created int64, meta config.ModelMeta) ModelInfo {
-	displayName := meta.DisplayName
-	if displayName == "" {
-		modelName := id
-		if i := strings.Index(id, "/"); i >= 0 {
-			modelName = id[i+1:]
-		}
-		displayName = modelName + " (" + ownedBy + ")"
-	}
-	info := ModelInfo{
-		ID:                         id,
-		Object:                     "model",
-		Created:                    created,
-		OwnedBy:                    ownedBy,
-		Slug:                       id,
-		DisplayName:                displayName,
-		Description:                meta.Description,
-		ContextWindow:              meta.ContextWindow,
-		MaxContextWindow:           meta.ContextWindow,
-		DefaultReasoningLevel:      meta.DefaultReasoningLevel,
-		SupportsReasoningSummaries: meta.SupportsReasoningSummaries,
-		DefaultReasoningSummary:    meta.DefaultReasoningSummary,
-	}
-	for _, preset := range meta.SupportedReasoningLevels {
-		info.SupportedReasoningLevels = append(info.SupportedReasoningLevels, ReasoningLevelPresetDTO{
-			Effort:      preset.Effort,
-			Description: preset.Description,
-		})
-	}
-	return info
-}
-
-func buildModelInfoFromRoute(alias string, ownedBy string, created int64, route config.RouteEntry) ModelInfo {
+// BuildModelInfoFromRoute creates a Codex-compatible ModelInfo from a route entry.
+func BuildModelInfoFromRoute(alias string, ownedBy string, route config.RouteEntry) ModelInfo {
 	displayName := route.DisplayName
 	if displayName == "" {
 		displayName = alias + " (" + ownedBy + ")"
 	}
-	info := ModelInfo{
-		ID:                         alias,
-		Object:                     "model",
-		Created:                    created,
-		OwnedBy:                    ownedBy,
-		Slug:                       alias,
-		DisplayName:                displayName,
-		Description:                route.Description,
-		ContextWindow:              route.ContextWindow,
-		MaxContextWindow:           route.ContextWindow,
-		DefaultReasoningLevel:      route.DefaultReasoningLevel,
-		SupportsReasoningSummaries: route.SupportsReasoningSummaries,
-		DefaultReasoningSummary:    route.DefaultReasoningSummary,
+	return newModelInfo(alias, displayName, route.Description, route.ContextWindow,
+		route.DefaultReasoningLevel, route.SupportedReasoningLevels,
+		route.SupportsReasoningSummaries, route.DefaultReasoningSummary)
+}
+
+// newModelInfo builds a ModelInfo with all fields Codex requires.
+func newModelInfo(
+	slug, displayName, description string,
+	contextWindow int,
+	defaultReasoningLevel string,
+	supportedLevels []config.ReasoningLevelPreset,
+	supportsReasoningSummaries bool,
+	defaultReasoningSummary string,
+) ModelInfo {
+	var levels []ReasoningLevelPresetDTO
+	for _, p := range supportedLevels {
+		levels = append(levels, ReasoningLevelPresetDTO{Effort: p.Effort, Description: p.Description})
 	}
-	for _, preset := range route.SupportedReasoningLevels {
-		info.SupportedReasoningLevels = append(info.SupportedReasoningLevels, ReasoningLevelPresetDTO{
-			Effort:      preset.Effort,
-			Description: preset.Description,
-		})
+	if levels == nil {
+		levels = []ReasoningLevelPresetDTO{}
 	}
-	return info
+	var ctxWin, maxCtxWin *int
+	if contextWindow > 0 {
+		v := contextWindow
+		ctxWin = &v
+		maxCtxWin = &v
+	}
+	if defaultReasoningSummary == "" {
+		defaultReasoningSummary = "none"
+	}
+	return ModelInfo{
+		Slug:                        slug,
+		DisplayName:                 displayName,
+		Description:                 description,
+		DefaultReasoningLevel:       defaultReasoningLevel,
+		SupportedReasoningLevels:    levels,
+		ShellType:                   "unified_exec",
+		Visibility:                  "list",
+		SupportedInAPI:              true,
+		Priority:                    0,
+		AdditionalSpeedTiers:        []string{},
+		BaseInstructions:            "",
+		SupportsReasoningSummaries:  supportsReasoningSummaries,
+		DefaultReasoningSummary:     defaultReasoningSummary,
+		WebSearchToolType:           "text",
+		TruncationPolicy:            TruncationPolicyConfig{Mode: "tokens", Limit: 0},
+		SupportsParallelToolCalls:   true,
+		ContextWindow:               ctxWin,
+		MaxContextWindow:            maxCtxWin,
+		EffectiveContextWindowPct:   95,
+		ExperimentalSupportedTools:  []string{},
+		InputModalities:             []string{"text"},
+	}
 }

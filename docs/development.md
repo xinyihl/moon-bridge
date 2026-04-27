@@ -60,7 +60,7 @@ go build -o moonbridge ./cmd/moonbridge
 # 打印配置信息供脚本使用
 ./moonbridge -print-addr
 ./moonbridge -print-codex-model
-./moonbridge -print-codex-config moonbridge
+./moonbridge -print-codex-config moonbridge -codex-home /path/to/codex_home
 ```
 
 启动脚本 `scripts/start_codex_with_moonbridge.sh` 和 `scripts/start_claude_code_with_moonbridge.sh` 会自动构建二进制、管理服务进程生命周期，并设置临时 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。

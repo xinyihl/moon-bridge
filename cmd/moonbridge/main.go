@@ -2,16 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"moonbridge/internal/app"
 	"moonbridge/internal/config"
 	"moonbridge/internal/logger"
+	"moonbridge/internal/server"
 )
 
 func main() {
@@ -25,6 +28,7 @@ func main() {
 	printClaudeModel := flag.Bool("print-claude-model", false, "Print configured Claude Code model and exit")
 	printCodexConfig := flag.String("print-codex-config", "", "Print Codex config.toml for the model alias and exit")
 	codexBaseURL := flag.String("codex-base-url", "", "Base URL to write in generated Codex config")
+	codexHome := flag.String("codex-home", "", "CODEX_HOME directory; when set, writes models_catalog.json there")
 	flag.Parse()
 
 	var cfg config.Config
@@ -71,7 +75,7 @@ func main() {
 		return
 	}
 	if *printCodexConfig != "" {
-		printCodexConfigToml(*printCodexConfig, *codexBaseURL, cfg.RouteFor(*printCodexConfig))
+		printCodexConfigToml(*printCodexConfig, *codexBaseURL, *codexHome, cfg)
 		return
 	}
 
@@ -83,7 +87,8 @@ func main() {
 	}
 }
 
-func printCodexConfigToml(modelAlias string, baseURL string, route config.RouteEntry) {
+func printCodexConfigToml(modelAlias string, baseURL string, codexHome string, cfg config.Config) {
+	route := cfg.RouteFor(modelAlias)
 	fmt.Printf("model = %q\n", modelAlias)
 	fmt.Println(`model_provider = "moonbridge"`)
 	if route.ContextWindow > 0 {
@@ -92,6 +97,16 @@ func printCodexConfigToml(modelAlias string, baseURL string, route config.RouteE
 	if route.MaxOutputTokens > 0 {
 		fmt.Printf("model_max_output_tokens = %d\n", route.MaxOutputTokens)
 	}
+
+	// Write models catalog JSON so Codex uses our metadata instead of bundled presets.
+	if codexHome != "" {
+		catalogPath := filepath.Join(codexHome, "models_catalog.json")
+		if err := writeModelsCatalog(catalogPath, cfg); err != nil {
+			log.Fatalf("failed to write models catalog: %v", err)
+		}
+		fmt.Printf("model_catalog_json = %q\n", catalogPath)
+	}
+
 	fmt.Println()
 	fmt.Println("[model_providers.moonbridge]")
 	fmt.Println(`name = "Moon Bridge"`)
@@ -110,4 +125,24 @@ func valueOrDefault(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// writeModelsCatalog generates a Codex-compatible models_catalog.json from all routes.
+func writeModelsCatalog(path string, cfg config.Config) error {
+	var models []server.ModelInfo
+	for alias, route := range cfg.Routes {
+		ownedBy := "system"
+		if route.Provider != "" {
+			ownedBy = route.Provider
+		}
+		models = append(models, server.BuildModelInfoFromRoute(alias, ownedBy, route))
+	}
+	catalog := struct {
+		Models []server.ModelInfo `json:"models"`
+	}{Models: models}
+	data, err := json.MarshalIndent(catalog, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }

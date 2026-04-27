@@ -83,6 +83,7 @@ if [[ -x "$SERVER_BIN" && -f "$CONFIG_FILE" ]]; then
     --config "$CONFIG_FILE" \
     --print-codex-config "$MODEL_ALIAS" \
     --codex-base-url "http://${HOST}:${PORT}/v1" \
+    --codex-home "$CODEX_HOME_DIR" \
     2>>"$LOG_FILE" \
     > "${CODEX_HOME_DIR}/config.toml"
 
