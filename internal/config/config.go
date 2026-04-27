@@ -243,7 +243,14 @@ func (cfg AnthropicProxyConfig) Validate(prefix string) error {
 }
 
 // ModelFor resolves a model alias to the upstream model name via Routes.
+// Supports "provider/model" direct reference.
 func (cfg Config) ModelFor(model string) string {
+	// Direct provider/model reference.
+	if provider, upstream := ParseModelRef(model); provider != "" {
+		if _, ok := cfg.ProviderDefs[provider]; ok {
+			return upstream
+		}
+	}
 	if cfg.Routes == nil {
 		return model
 	}
@@ -254,7 +261,23 @@ func (cfg Config) ModelFor(model string) string {
 }
 
 // RouteFor returns the full RouteEntry for a model alias.
+// Supports "provider/model" direct reference.
 func (cfg Config) RouteFor(model string) RouteEntry {
+	// Direct provider/model reference.
+	if provider, upstream := ParseModelRef(model); provider != "" {
+		if def, ok := cfg.ProviderDefs[provider]; ok {
+			entry := RouteEntry{Provider: provider, Model: upstream}
+			if meta, ok := def.Models[upstream]; ok {
+				entry.ContextWindow = meta.ContextWindow
+				entry.MaxOutputTokens = meta.MaxOutputTokens
+				entry.InputPrice = meta.InputPrice
+				entry.OutputPrice = meta.OutputPrice
+				entry.CacheWritePrice = meta.CacheWritePrice
+				entry.CacheReadPrice = meta.CacheReadPrice
+			}
+			return entry
+		}
+	}
 	if cfg.Routes == nil {
 		return RouteEntry{}
 	}
@@ -320,6 +343,10 @@ func (cfg Config) WebSearchForProvider(providerKey string) WebSearchSupport {
 
 // WebSearchForModel returns the resolved web search support for a given model alias.
 func (cfg Config) WebSearchForModel(modelAlias string) WebSearchSupport {
+	// Direct provider/model reference.
+	if provider, _ := ParseModelRef(modelAlias); provider != "" {
+		return cfg.WebSearchForProvider(provider)
+	}
 	if route, ok := cfg.Routes[modelAlias]; ok && route.Provider != "" {
 		return cfg.WebSearchForProvider(route.Provider)
 	}
@@ -410,6 +437,10 @@ func (cfg Config) DeepSeekV4ForProvider(providerKey string) bool {
 }
 
 func (cfg Config) DeepSeekV4ForModel(modelAlias string) bool {
+	// Direct provider/model reference.
+	if provider, _ := ParseModelRef(modelAlias); provider != "" {
+		return cfg.DeepSeekV4ForProvider(provider)
+	}
 	if route, ok := cfg.Routes[modelAlias]; ok && route.Provider != "" {
 		return cfg.DeepSeekV4ForProvider(route.Provider)
 	}
@@ -420,10 +451,25 @@ func (cfg Config) DeepSeekV4ForModel(modelAlias string) bool {
 }
 
 // ProviderFor returns the provider key that serves the given model alias.
-// Returns empty string when no explicit mapping exists.
+// Supports "provider/model" direct reference.
 func (cfg Config) ProviderFor(modelAlias string) string {
+	// Direct provider/model reference.
+	if provider, _ := ParseModelRef(modelAlias); provider != "" {
+		if _, ok := cfg.ProviderDefs[provider]; ok {
+			return provider
+		}
+	}
 	if route, ok := cfg.Routes[modelAlias]; ok {
 		return route.Provider
 	}
 	return ""
+}
+// ParseModelRef parses a model reference that may be in "provider/model" format.
+// Returns (providerKey, modelName). If no slash, providerKey is "" and modelName is the input.
+func ParseModelRef(ref string) (provider, model string) {
+	before, after, found := strings.Cut(strings.TrimSpace(ref), "/")
+	if !found {
+		return "", ref
+	}
+	return strings.TrimSpace(before), strings.TrimSpace(after)
 }

@@ -77,11 +77,87 @@ func New(cfg Config) *Server {
 	}
 	server.mux.HandleFunc("/v1/responses", server.handleResponses)
 	server.mux.HandleFunc("/responses", server.handleResponses)
+	server.mux.HandleFunc("/v1/models", server.handleModels)
+	server.mux.HandleFunc("/models", server.handleModels)
 	return server
 }
 
 func (server *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	server.mux.ServeHTTP(writer, request)
+}
+
+
+// ModelInfo represents a model entry in the OpenAI /v1/models response.
+type ModelInfo struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+func (server *Server) handleModels(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeOpenAIError(writer, http.StatusMethodNotAllowed, openai.ErrorResponse{Error: openai.ErrorObject{
+			Message: "only GET requests are supported",
+			Type:    "invalid_request_error",
+			Code:    "method_not_allowed",
+		}})
+		return
+	}
+	models := server.listModels()
+	resp := struct {
+		Object string      `json:"object"`
+		Data   []ModelInfo `json:"data"`
+	}{
+		Object: "list",
+		Data:   models,
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(writer).Encode(resp)
+}
+
+
+func (server *Server) listModels() []ModelInfo {
+	seen := make(map[string]bool)
+	var models []ModelInfo
+	now := time.Now().Unix()
+
+	// Direct "provider/upstream_model" entries from provider definitions first.
+	for providerKey, def := range server.appConfig.ProviderDefs {
+		for modelName := range def.Models {
+			id := providerKey + "/" + modelName
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			models = append(models, ModelInfo{
+				ID:      id,
+				Object:  "model",
+				Created: now,
+				OwnedBy: providerKey,
+			})
+		}
+	}
+
+	// Route aliases (processed second so they won't be shadowed by direct entries).
+	for alias, route := range server.appConfig.Routes {
+		if seen[alias] {
+			continue
+		}
+		seen[alias] = true
+		ownedBy := "system"
+		if route.Provider != "" {
+			ownedBy = route.Provider
+		}
+		models = append(models, ModelInfo{
+			ID:      alias,
+			Object:  "model",
+			Created: now,
+			OwnedBy: ownedBy,
+		})
+	}
+
+	return models
 }
 
 func (server *Server) handleResponses(writer http.ResponseWriter, request *http.Request) {

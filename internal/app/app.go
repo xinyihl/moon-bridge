@@ -123,6 +123,10 @@ func buildProviderDefsFromConfig(cfg config.Config) map[string]provider.Provider
 	if len(cfg.ProviderDefs) > 0 {
 		defs := make(map[string]provider.ProviderConfig, len(cfg.ProviderDefs))
 		for key, def := range cfg.ProviderDefs {
+			modelNames := make([]string, 0, len(def.Models))
+			for name := range def.Models {
+				modelNames = append(modelNames, name)
+			}
 			defs[key] = provider.ProviderConfig{
 				BaseURL:          def.BaseURL,
 				APIKey:           def.APIKey,
@@ -130,6 +134,7 @@ func buildProviderDefsFromConfig(cfg config.Config) map[string]provider.Provider
 				UserAgent:        def.UserAgent,
 				Protocol:         def.Protocol,
 				WebSearchSupport: string(def.WebSearchSupport),
+				ModelNames:        modelNames,
 			}
 		}
 		return defs

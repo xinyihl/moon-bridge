@@ -12,6 +12,16 @@ import (
 	"moonbridge/internal/anthropic"
 )
 
+// ParseModelRef parses a model reference in "provider/model" format.
+// Returns (providerKey, modelName). If no slash, providerKey is "" and modelName is the input.
+func ParseModelRef(ref string) (provider, model string) {
+	before, after, found := strings.Cut(strings.TrimSpace(ref), "/")
+	if !found {
+		return "", ref
+	}
+	return strings.TrimSpace(before), strings.TrimSpace(after)
+}
+
 // HTTPConfig controls the HTTP connection pool for a provider.
 type HTTPConfig struct {
 	MaxIdleConnsPerHost int    `yaml:"max_idle_conns_per_host"`
@@ -26,7 +36,8 @@ type ProviderConfig struct {
 	UserAgent string     `yaml:"user_agent"`
 	Protocol  string     // "anthropic" (default) or "openai"
 	HTTP      HTTPConfig `yaml:"http"`
-	WebSearchSupport string // "auto", "enabled", "disabled", "injected", or "" (inherit global)
+	WebSearchSupport string   // "auto", "enabled", "disabled", "injected", or "" (inherit global)
+	ModelNames        []string // upstream model names for this provider
 }
 
 // ModelRoute maps a model alias to a provider and an upstream model name.
@@ -95,6 +106,13 @@ func NewProviderManager(providerCfgs map[string]ProviderConfig, routes map[strin
 // ClientFor returns the anthropic.Client and upstream model name for a given model alias.
 // It returns the default provider if the alias is not explicitly routed.
 func (pm *ProviderManager) ClientFor(modelAlias string) (string, *anthropic.Client, error) {
+	// Direct provider/model reference.
+	if provider, upstream := ParseModelRef(modelAlias); provider != "" {
+		if client, ok := pm.clients[provider]; ok {
+			return upstream, client, nil
+		}
+	}
+
 	route, ok := pm.routes[modelAlias]
 	if !ok {
 		// No explicit route: use default provider with the model name as-is.
@@ -232,6 +250,10 @@ func (pm *ProviderManager) ProtocolForKey(key string) string {
 // ProtocolForModel returns the protocol for the provider serving the given model alias.
 // Returns "anthropic" if the model is not explicitly routed.
 func (pm *ProviderManager) ProtocolForModel(modelAlias string) string {
+	// Direct provider/model reference.
+	if provider, _ := ParseModelRef(modelAlias); provider != "" {
+		return pm.ProtocolForKey(provider)
+	}
 	route, ok := pm.routes[modelAlias]
 	if !ok {
 		return pm.ProtocolForKey(pm.defaultK)
@@ -245,6 +267,12 @@ func (pm *ProviderManager) ProtocolForModel(modelAlias string) string {
 
 // UpstreamModelFor returns the upstream model name for a model alias.
 func (pm *ProviderManager) UpstreamModelFor(modelAlias string) string {
+	// Direct provider/model reference.
+	if provider, upstream := ParseModelRef(modelAlias); provider != "" {
+		if _, ok := pm.clients[provider]; ok {
+			return upstream
+		}
+	}
 	route, ok := pm.routes[modelAlias]
 	if !ok || route.Name == "" {
 		return modelAlias
@@ -272,6 +300,12 @@ func (pm *ProviderManager) ProviderAPIKey(key string) string {
 // ProviderKeyForModel returns the provider key that serves the given model alias.
 // Falls back to defaultK when the model has no explicit route.
 func (pm *ProviderManager) ProviderKeyForModel(modelAlias string) string {
+	// Direct provider/model reference.
+	if provider, _ := ParseModelRef(modelAlias); provider != "" {
+		if _, ok := pm.clients[provider]; ok {
+			return provider
+		}
+	}
 	route, ok := pm.routes[modelAlias]
 	if !ok || route.Provider == "" {
 		return pm.defaultK
@@ -292,6 +326,7 @@ func (pm *ProviderManager) ResolvedWebSearch(key string) string {
 
 // ResolvedWebSearchForModel returns the resolved web search support for a model alias.
 func (pm *ProviderManager) ResolvedWebSearchForModel(modelAlias string) string {
+	// ProviderKeyForModel already handles "provider/model" direct reference.
 	return pm.resolvedWS[pm.ProviderKeyForModel(modelAlias)]
 }
 
@@ -305,7 +340,8 @@ func (pm *ProviderManager) WebSearchConfigForKey(key string) string {
 }
 
 // FirstUpstreamModelForKey returns the upstream model name for the first model
-// alias routed to the given provider key. Returns empty string if none found.
+// alias routed to the given provider key. Falls back to the provider's own
+// model list when no route alias references it. Returns empty string if none found.
 func (pm *ProviderManager) FirstUpstreamModelForKey(key string) string {
 	for _, route := range pm.routes {
 		pk := route.Provider
@@ -315,6 +351,11 @@ func (pm *ProviderManager) FirstUpstreamModelForKey(key string) string {
 		if pk == key {
 			return route.Name
 		}
+	}
+
+	// Fallback: use the first model from the provider's own catalog.
+	if cfg, ok := pm.providers[key]; ok && len(cfg.ModelNames) > 0 {
+		return cfg.ModelNames[0]
 	}
 	return ""
 }
