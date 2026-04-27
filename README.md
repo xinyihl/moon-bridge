@@ -47,7 +47,7 @@ provider:
   providers:
     deepseek:
       base_url: "https://api.deepseek.com"
-      api_key: "${DEEPSEEK_API_KEY}"
+      api_key: "replace-with-deepseek-api-key"
       version: "2023-06-01"
       deepseek_v4: true
       models:
@@ -56,7 +56,7 @@ provider:
           max_output_tokens: 100000
     openai:
       base_url: "https://api.openai.com"
-      api_key: "${OPENAI_API_KEY}"
+      api_key: "replace-with-openai-api-key"
       protocol: "openai"
       models:
         gpt-image-1.5: {}
@@ -120,12 +120,12 @@ provider:
   providers:
     anthropic:
       base_url: "https://api.anthropic.com"
-      api_key: "${ANTHROPIC_API_KEY}"
+      api_key: "replace-with-anthropic-api-key"
       web_search:
         support: "enabled"  # Anthropic 原生支持
     deepseek:
       base_url: "https://api.deepseek.com"
-      api_key: "${DEEPSEEK_API_KEY}"
+      api_key: "replace-with-deepseek-api-key"
       deepseek_v4: true
       web_search:
         support: "disabled" # DeepSeek 不支持 Anthropic server tool

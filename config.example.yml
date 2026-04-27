@@ -15,7 +15,7 @@ provider:
   providers:
     deepseek:
       base_url: "https://api.deepseek.com"
-      api_key: "${DEEPSEEK_API_KEY}"
+      api_key: "replace-with-deepseek-api-key"
       version: "2023-06-01"
       user_agent: "moonbridge/1.0"
       deepseek_v4: true
@@ -32,7 +32,7 @@ provider:
             cache_read_price: 0.2
     openai:
       base_url: "https://api.openai.com"
-      api_key: "${OPENAI_API_KEY}"
+      api_key: "replace-with-openai-api-key"
       protocol: "openai"
       user_agent: "moonbridge/1.0"
       models:
@@ -40,7 +40,7 @@ provider:
         gpt-4o-mini-tts: {}
     anthropic:
       base_url: "https://api.anthropic.com"
-      api_key: "${ANTHROPIC_API_KEY}"
+      api_key: "replace-with-anthropic-api-key"
       version: "2023-06-01"
       user_agent: "moonbridge/1.0"
       web_search:

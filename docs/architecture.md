@@ -88,7 +88,6 @@ flowchart LR
 
 集中管理 YAML 配置。
 
-- 读取 `config.yml`（或 `MOONBRIDGE_CONFIG` 环境变量指定路径）。
 - 使用 `yaml.v3` `KnownFields(true)` 严格解析，防止字段拼写错误。
 - 校验 mode、多 Provider 必填字段（`provider.providers.*.base_url` / `api_key` / `protocol`）、模型路由和缓存参数。
 - 提供 `ModelFor()` 将客户端模型别名映射为上游真实模型名，并读取 `provider.web_search.support` 控制搜索工具是否自动探测、强制启用、禁用或 server-side injected。

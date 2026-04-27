@@ -188,7 +188,6 @@ fi
 
 mkdir -p "$CLAUDE_CONFIG_DIR_VALUE" "${ROOT_DIR}/.cache/go-build" "$(dirname "$SERVER_BIN")"
 
-export MOONBRIDGE_CONFIG="$CONFIG_FILE"
 export CGO_ENABLED="${CGO_ENABLED:-0}"
 export GOCACHE="${GOCACHE:-"${ROOT_DIR}/.cache/go-build"}"
 
@@ -214,7 +213,7 @@ log "Starting Moon Bridge on ${ADDR}"
 log "Moon Bridge log: ${LOG_FILE}"
 (
   cd "$ROOT_DIR"
-  "$SERVER_BIN"
+  "$SERVER_BIN" --config "$CONFIG_FILE"
 ) >> "$LOG_FILE" 2>&1 &
 SERVER_PID="$!"
 wait_for_server

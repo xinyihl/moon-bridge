@@ -32,7 +32,7 @@ func main() {
 	if *configPath != "" {
 		cfg, err = config.LoadFromFile(*configPath)
 	} else {
-		cfg, err = config.LoadFromEnv()
+		cfg, err = config.LoadFromFile(config.DefaultConfigPath)
 	}
 	if err != nil {
 		log.Fatal(err)

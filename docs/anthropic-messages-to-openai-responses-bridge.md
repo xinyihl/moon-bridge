@@ -50,7 +50,6 @@ internal/e2e           真实提供商端到端测试
 
 ## 配置
 
-基于 YAML，详见 [config.example.yml](../config.example.yml)。默认从 `config.yml` 加载配置文件，可通过 `MOONBRIDGE_CONFIG` 环境变量覆盖。敏感凭证和本地覆盖项放入被 `.gitignore` 忽略的 `config.yml`；示例文件始终纳入版本控制。
 
 Provider 在 `models` 中声明可用的上游模型及元信息，`routes` 把客户端别名映射到 `"provider/upstream_model"`：
 
@@ -59,7 +58,7 @@ provider:
   providers:
     deepseek:
       base_url: "https://api.deepseek.com"
-      api_key: "${DEEPSEEK_API_KEY}"
+      api_key: "replace-with-deepseek-api-key"
       version: "2023-06-01"
       deepseek_v4: true
       models:
@@ -71,7 +70,7 @@ provider:
             output_price: 8
     openai:
       base_url: "https://api.openai.com"
-      api_key: "${OPENAI_API_KEY}"
+      api_key: "replace-with-openai-api-key"
       protocol: "openai"
       models:
         gpt-image-1.5: {}

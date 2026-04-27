@@ -20,7 +20,7 @@ provider:
   providers:
     deepseek:
       base_url: "https://api.deepseek.com"
-      api_key: "${DEEPSEEK_API_KEY}"
+      api_key: "replace-with-deepseek-api-key"
       deepseek_v4: true
       models:
         deepseek-v4-pro: {}

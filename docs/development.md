@@ -12,7 +12,8 @@ cp config.example.yml config.yml
 # 并在各 Provider 的 models 中配置模型别名、上游模型名和可选价格。
 ```
 
-`config.yml` 已在 `.gitignore` 中，不会提交到仓库。也可通过 `MOONBRIDGE_CONFIG` 环境变量指定其他路径。
+`config.yml` 已在 `.gitignore` 中，不会提交到仓库。也可通过 `--config` 参数指定其他路径
+注：`MOONBRIDGE_CONFIG` 不再被读取，请使用 `--config` 标志。
 
 ### 文件结构
 

@@ -460,7 +460,7 @@ New-Item -ItemType Directory -Force -Path $CodexHomeDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $RootDir ".cache\go-build") | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ServerBin) | Out-Null
 
-$env:MOONBRIDGE_CONFIG = $ConfigFile
+# Config is passed via --config flag, not env var
 if (-not $env:CGO_ENABLED) {
     $env:CGO_ENABLED = "0"
 }
@@ -539,7 +539,7 @@ Write-Log "Press Ctrl+C in this terminal to stop Moon Bridge and the launched Co
 Push-Location $RootDir
 $MoonBridgeStatus = 0
 try {
-    & $ServerBin
+    & $ServerBin $ServerBin --config $ConfigFile
     $MoonBridgeStatus = $LASTEXITCODE
 } finally {
     Stop-CodexTerminal

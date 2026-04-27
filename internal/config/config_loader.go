@@ -110,20 +110,13 @@ type LogFileConfig struct {
 	Format string `yaml:"format"`
 }
 
-func LoadFromEnv() (Config, error) {
-	path := os.Getenv("MOONBRIDGE_CONFIG")
-	if path == "" {
-		path = DefaultConfigPath
-	}
-	return LoadFromFile(path)
-}
 
 func LoadFromFile(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config %s: %w", path, err)
 	}
-	return LoadFromYAML([]byte(os.ExpandEnv(string(data))))
+	return LoadFromYAML(data)
 }
 
 func LoadFromYAML(data []byte) (Config, error) {

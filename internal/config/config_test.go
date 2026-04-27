@@ -1,8 +1,6 @@
 package config_test
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"moonbridge/internal/config"
@@ -297,43 +295,8 @@ provider:
 		t.Fatal("LoadFromYAML() error = nil, want empty route model error")
 	}
 }
-
-func TestLoadFromEnvUsesMoonBridgeConfigPath(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yml")
-	if err := os.WriteFile(path, []byte(`
-mode: Transform
-server:
-  addr: 127.0.0.1:9999
-provider:
-  providers:
-    main:
-      base_url: https://provider.example.test
-      api_key: upstream-key
-      models:
-        claude-test: {}
-  routes:
-    moonbridge: "main/claude-test"
-cache:
-  mode: off
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	t.Setenv("MOONBRIDGE_CONFIG", path)
-	cfg, err := config.LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.Addr != "127.0.0.1:9999" {
-		t.Fatalf("Addr = %q", cfg.Addr)
-	}
-	if cfg.Cache.Mode != "off" {
-		t.Fatalf("Cache.Mode = %q", cfg.Cache.Mode)
-	}
-}
-
 func TestLoadFromYAMLParsesCaptureResponseConfig(t *testing.T) {
+
 	cfg, err := config.LoadFromYAML([]byte(`
 mode: CaptureResponse
 trace_requests: true
@@ -470,30 +433,3 @@ developer:
 	}
 }
 
-func TestLoadFromFileExpandsEnvironmentVariables(t *testing.T) {
-	t.Setenv("MOONBRIDGE_TEST_API_KEY", "expanded-key")
-
-	configPath := filepath.Join(t.TempDir(), "config.yml")
-	if err := os.WriteFile(configPath, []byte(`
-mode: Transform
-provider:
-  providers:
-    main:
-      base_url: https://provider.example.test
-      api_key: "${MOONBRIDGE_TEST_API_KEY}"
-      models:
-        claude-test: {}
-  routes:
-    moonbridge: "main/claude-test"
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	cfg, err := config.LoadFromFile(configPath)
-	if err != nil {
-		t.Fatalf("LoadFromFile() error = %v", err)
-	}
-	if cfg.ProviderAPIKey != "expanded-key" {
-		t.Fatalf("ProviderAPIKey = %q, want expanded-key", cfg.ProviderAPIKey)
-	}
-}

@@ -30,13 +30,6 @@ func WelcomeMessage() string {
 	return "Welcome to " + Name + "!"
 }
 
-func RunServerFromEnv(ctx context.Context, errors io.Writer) error {
-	cfg, err := config.LoadFromEnv()
-	if err != nil {
-		return err
-	}
-	return RunServer(ctx, cfg, errors)
-}
 
 func RunServer(ctx context.Context, cfg config.Config, errors io.Writer) error {
 	switch cfg.Mode {

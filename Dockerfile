@@ -17,7 +17,6 @@ WORKDIR /app
 COPY --from=builder /out/moonbridge /app/moonbridge
 COPY config.example.yml /app/config.example.yml
 
-ENV MOONBRIDGE_CONFIG=/config/config.yml
 EXPOSE 38440
 
 USER nonroot:nonroot
