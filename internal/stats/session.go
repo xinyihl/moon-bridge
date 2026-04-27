@@ -256,13 +256,22 @@ func FormatTokenCount(n int64) string {
 	}
 }
 
-// FormatAvgCost formats an average cost per token as "¥X.XXXXXXXX/token".
-// Returns "¥0.00000000/token" when tokens <= 0.
+// FormatAvgCost formats an average cost per token with adaptive units:
+// cost/token >= 1 → ¥X.XX/token, >= 0.001 → ¥X.XX/K, else → ¥X.XX/M.
+// Returns "¥0.00/M" when tokens <= 0.
 func FormatAvgCost(cost float64, tokens int64) string {
 	if tokens <= 0 {
-		return "¥0.00000000/token"
+		return "¥0.00/M"
 	}
-	return fmt.Sprintf("¥%.8f/token", cost/float64(tokens))
+	perToken := cost / float64(tokens)
+	switch {
+	case perToken >= 1:
+		return fmt.Sprintf("¥%.2f/token", perToken)
+	case perToken >= 0.001:
+		return fmt.Sprintf("¥%.2f/K", perToken*1000)
+	default:
+		return fmt.Sprintf("¥%.2f/M", perToken*1_000_000)
+	}
 }
 
 // CacheRWRatio returns the cache read/write ratio (reads per write).
@@ -332,16 +341,15 @@ func WriteSummary(w io.Writer, s Summary) {
 	if freshInput < 0 {
 		freshInput = 0
 	}
-	fmt.Fprintf(&buf, "  输入: %d tokens (%s) (首次 %s, 缓存写入 %s, 缓存读取 %s)\n",
-		s.InputTokens,
+	fmt.Fprintf(&buf, "  输入: %s (首次 %s, 缓存写入 %s, 缓存读取 %s)\n",
 		FormatTokenCount(s.InputTokens),
 		FormatTokenCount(freshInput),
 		FormatTokenCount(s.CacheCreation),
 		FormatTokenCount(s.CacheRead))
-	fmt.Fprintf(&buf, "  输出: %d tokens (%s)\n", s.OutputTokens, FormatTokenCount(s.OutputTokens))
+	fmt.Fprintf(&buf, "  输出: %s\n", FormatTokenCount(s.OutputTokens))
 	if s.CacheHitRate > 0 {
-		fmt.Fprintf(&buf, "  缓存命中率: %.1f%% (节省 %d tokens (%s))\n",
-			s.CacheHitRate, s.EffectiveInputSaved, FormatTokenCount(s.EffectiveInputSaved))
+		fmt.Fprintf(&buf, "  缓存命中率: %.1f%% (节省 %s)\n",
+			s.CacheHitRate, FormatTokenCount(s.EffectiveInputSaved))
 	}
 	rwRatio := float64(0)
 	if s.CacheCreation > 0 {

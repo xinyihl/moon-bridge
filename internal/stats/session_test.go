@@ -132,19 +132,33 @@ func TestFormatTokenCountBoundary(t *testing.T) {
 
 func TestFormatAvgCostNormal(t *testing.T) {
 	got := FormatAvgCost(0.01234567, 1000)
-	if got != "¥0.00001235/token" {
-		t.Fatalf("FormatAvgCost = %q, want ¥0.00001235/token", got)
+	if got != "¥12.35/M" {
+		t.Fatalf("FormatAvgCost = %q, want ¥12.35/M", got)
+	}
+}
+
+func TestFormatAvgCostLarge(t *testing.T) {
+	got := FormatAvgCost(5000.0, 100)
+	if got != "¥50.00/token" {
+		t.Fatalf("FormatAvgCost(5000, 100) = %q, want ¥50.00/token", got)
+	}
+}
+
+func TestFormatAvgCostTiny(t *testing.T) {
+	got := FormatAvgCost(0.001, 1000)
+	if got != "¥1.00/M" {
+		t.Fatalf("FormatAvgCost(0.001, 1000) = %q, want ¥1.00/M", got)
 	}
 }
 
 func TestFormatAvgCostZero(t *testing.T) {
 	got := FormatAvgCost(100.0, 0)
-	if got != "¥0.00000000/token" {
-		t.Fatalf("FormatAvgCost(100, 0) = %q, want ¥0.00000000/token", got)
+	if got != "¥0.00/M" {
+		t.Fatalf("FormatAvgCost(100, 0) = %q, want ¥0.00/M", got)
 	}
 	got = FormatAvgCost(100.0, -1)
-	if got != "¥0.00000000/token" {
-		t.Fatalf("FormatAvgCost(100, -1) = %q, want ¥0.00000000/token", got)
+	if got != "¥0.00/M" {
+		t.Fatalf("FormatAvgCost(100, -1) = %q, want ¥0.00/M", got)
 	}
 }
 
@@ -152,5 +166,22 @@ func TestFormatTokenCountMinInt64(t *testing.T) {
 	got := FormatTokenCount(-1 << 63) // math.MinInt64
 	if got != "-9.22E" {
 		t.Fatalf("FormatTokenCount(MinInt64) = %q, want -9.22E", got)
+	}
+}
+
+func TestFormatAvgCostKUnit(t *testing.T) {
+	got := FormatAvgCost(5.0, 1000)
+	if got != "¥5.00/K" {
+		t.Fatalf("FormatAvgCost(5, 1000) = %q, want ¥5.00/K", got)
+	}
+}
+
+func TestFormatAvgCostBoundary(t *testing.T) {
+	// Exactly at thresholds
+	if got := FormatAvgCost(1000, 1000); got != "¥1.00/token" {
+		t.Fatalf("perToken=1: got %q, want ¥1.00/token", got)
+	}
+	if got := FormatAvgCost(1, 1000); got != "¥1.00/K" {
+		t.Fatalf("perToken=0.001: got %q, want ¥1.00/K", got)
 	}
 }
