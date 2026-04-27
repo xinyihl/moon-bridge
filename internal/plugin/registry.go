@@ -103,10 +103,6 @@ func (r *Registry) ShutdownAll() {
 
 // --- Dispatch methods ---
 
-func (r *Registry) enabled(model string) func(Plugin) bool {
-	return func(p Plugin) bool { return p.EnabledForModel(model) }
-}
-
 // PreprocessInput chains InputPreprocessor across enabled plugins.
 func (r *Registry) PreprocessInput(model string, raw json.RawMessage) json.RawMessage {
 	if r == nil {
