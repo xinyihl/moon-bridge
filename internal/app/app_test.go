@@ -8,6 +8,7 @@ import (
 
 	"moonbridge/internal/config"
 	"moonbridge/internal/provider"
+	"moonbridge/internal/stats"
 	mbtrace "moonbridge/internal/trace"
 )
 
@@ -172,6 +173,113 @@ func TestResolvePerProviderWebSearchAppliesProviderCatalogModelOverride(t *testi
 	}
 	if got := pm.ResolvedWebSearchForModel("main/claude-test"); got != "enabled" {
 		t.Fatalf("ResolvedWebSearchForModel(main/claude-test) = %q, want enabled", got)
+	}
+}
+
+
+func TestPricingIndexIncludesProviderModelSlugs(t *testing.T) {
+	// Simulate the pricing setup from runTransform():
+	// pricing should be indexed by both route aliases AND provider/model slugs.
+	pricing := make(map[string]stats.ModelPricing)
+	routes := map[string]config.RouteEntry{
+		"moonbridge": {
+			Provider:        "deepseek",
+			Model:           "deepseek-v4-pro",
+			InputPrice:      2,
+			OutputPrice:     8,
+			CacheWritePrice: 1,
+			CacheReadPrice:  0.2,
+		},
+	}
+	providerDefs := map[string]config.ProviderDef{
+		"deepseek": {
+			Models: map[string]config.ModelMeta{
+				"deepseek-v4-pro": {
+					InputPrice:      2,
+					OutputPrice:     8,
+					CacheWritePrice: 1,
+					CacheReadPrice:  0.2,
+				},
+				"deepseek-v4-flash": {
+					InputPrice:      1,
+					OutputPrice:     2,
+					CacheWritePrice: 0,
+					CacheReadPrice:  0.02,
+				},
+			},
+		},
+	}
+
+	// Step 1: Build pricing from route aliases (existing logic).
+	for alias, route := range routes {
+		if route.InputPrice > 0 || route.OutputPrice > 0 || route.CacheWritePrice > 0 || route.CacheReadPrice > 0 {
+			pricing[alias] = stats.ModelPricing{
+				InputPrice:      route.InputPrice,
+				OutputPrice:     route.OutputPrice,
+				CacheWritePrice: route.CacheWritePrice,
+				CacheReadPrice:  route.CacheReadPrice,
+			}
+		}
+	}
+
+	// Step 2: Also index by provider/model slug (the fix).
+	for providerKey, def := range providerDefs {
+		for modelName, meta := range def.Models {
+			slug := providerKey + "/" + modelName
+			if _, exists := pricing[slug]; exists {
+				continue
+			}
+			if meta.InputPrice > 0 || meta.OutputPrice > 0 || meta.CacheWritePrice > 0 || meta.CacheReadPrice > 0 {
+				pricing[slug] = stats.ModelPricing{
+					InputPrice:      meta.InputPrice,
+					OutputPrice:     meta.OutputPrice,
+					CacheWritePrice: meta.CacheWritePrice,
+					CacheReadPrice:  meta.CacheReadPrice,
+				}
+			}
+		}
+	}
+
+	sessionStats := stats.NewSessionStats()
+	sessionStats.SetPricing(pricing)
+
+	// Verify route alias pricing works.
+	cost := sessionStats.ComputeCost("moonbridge", stats.Usage{
+		InputTokens: 1000, OutputTokens: 500,
+	})
+	if cost <= 0 {
+		t.Fatalf("ComputeCost(moonbridge, ...) = %f, want > 0", cost)
+	}
+
+	// Verify provider/model slug pricing works (this was the bug).
+	cost = sessionStats.ComputeCost("deepseek/deepseek-v4-flash", stats.Usage{
+		InputTokens: 1000, OutputTokens: 500,
+	})
+	if cost <= 0 {
+		t.Fatalf("ComputeCost(deepseek/deepseek-v4-flash, ...) = %f, want > 0", cost)
+	}
+
+	// Verify deepseek-v4-pro also works via slug (and route pricing takes priority).
+	cost = sessionStats.ComputeCost("deepseek/deepseek-v4-pro", stats.Usage{
+		InputTokens: 1000, OutputTokens: 500,
+	})
+	if cost <= 0 {
+		t.Fatalf("ComputeCost(deepseek/deepseek-v4-pro, ...) = %f, want > 0", cost)
+	}
+
+	// Verify Record() accumulates cost for provider/model slug.
+	sessionStats.Record("deepseek/deepseek-v4-flash", stats.Usage{
+		InputTokens: 1000, OutputTokens: 200,
+	})
+	summary := sessionStats.Summary()
+	if summary.TotalCost <= 0 {
+		t.Fatalf("Summary().TotalCost = %f, want > 0 after Record(deepseek/deepseek-v4-flash)", summary.TotalCost)
+	}
+	if _, ok := summary.ByModel["deepseek/deepseek-v4-flash"]; !ok {
+		t.Fatal("Summary().ByModel missing deepseek/deepseek-v4-flash")
+	}
+	if summary.ByModel["deepseek/deepseek-v4-flash"].Cost <= 0 {
+		t.Fatalf("ByModel[deepseek/deepseek-v4-flash].Cost = %f, want > 0", summary.ByModel["deepseek/deepseek-v4-flash"].Cost)
 	}
 }
 
