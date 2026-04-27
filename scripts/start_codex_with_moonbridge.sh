@@ -170,10 +170,11 @@ ADDR="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-addr 2>>"$LOG_FILE")"
 parse_addr
 ensure_port_free
 
-"$SERVER_BIN" \
+  "$SERVER_BIN" \
   --config "$CONFIG_FILE" \
   --print-codex-config "$MODEL_ALIAS" \
   --codex-base-url "http://${BASE_ADDR}/v1" \
+  --codex-home "$CODEX_HOME_DIR" \
   2>>"$LOG_FILE" \
   > "${CODEX_HOME_DIR}/config.toml"
 append_codex_status_line "${CODEX_HOME_DIR}/config.toml"

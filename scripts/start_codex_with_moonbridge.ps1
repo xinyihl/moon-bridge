@@ -511,7 +511,8 @@ Ensure-PortFree -Addr $Addr -HostName $ParsedAddr.Host -Port $ParsedAddr.Port
 $codexConfigResult = Invoke-NativeCapture -FilePath $ServerBin -Arguments @(
     "--config", $ConfigFile,
     "--print-codex-config", $ModelAlias,
-    "--codex-base-url", "http://$($ParsedAddr.BaseAddr)/v1"
+    "--codex-base-url", "http://$($ParsedAddr.BaseAddr)/v1",
+    "--codex-home", $CodexHomeDir
 )
 if ($codexConfigResult.ExitCode -ne 0) {
     exit $codexConfigResult.ExitCode
