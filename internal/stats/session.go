@@ -117,7 +117,10 @@ func (s *SessionStats) Record(model string, actualModel string, usage Usage) {
 // computeCost calculates the cost in RMB for a single usage record.
 // All prices are per M tokens.
 func computeCost(usage Usage, p ModelPricing) float64 {
-	freshInput := float64(usage.InputTokens)
+	freshInput := float64(usage.InputTokens - usage.CacheCreationInputTokens - usage.CacheReadInputTokens)
+	if freshInput < 0 {
+		freshInput = 0
+	}
 	cacheWrite := float64(usage.CacheCreationInputTokens)
 	cacheRead := float64(usage.CacheReadInputTokens)
 	output := float64(usage.OutputTokens)
@@ -133,7 +136,7 @@ func (s *SessionStats) Summary() Summary {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	totalInput := s.totalInputTokens + s.totalCacheCreation + s.totalCacheRead
+	totalInput := s.totalInputTokens
 	var cacheHitRate float64
 	var cacheWriteRate float64
 	if totalInput > 0 {
@@ -235,6 +238,10 @@ func CacheRWRatio(usage Usage) float64 {
 
 func FormatUsageLine(p UsageLineParams) string {
 	rwRatio := CacheRWRatio(p.Usage)
+	freshInput := p.Usage.InputTokens - p.Usage.CacheCreationInputTokens - p.Usage.CacheReadInputTokens
+	if freshInput < 0 {
+		freshInput = 0
+	}
 	return fmt.Sprintf(
 		"模型: %s ➡️ %s\n"+
 			"输入: 读取 %.4f M + 写入 %.4f M + 首次 %.4f M\n"+
@@ -244,7 +251,7 @@ func FormatUsageLine(p UsageLineParams) string {
 		p.RequestModel, p.ActualModel,
 		float64(p.Usage.CacheReadInputTokens)/1_000_000,
 		float64(p.Usage.CacheCreationInputTokens)/1_000_000,
-		float64(p.Usage.InputTokens)/1_000_000,
+		float64(freshInput)/1_000_000,
 		float64(p.Usage.OutputTokens)/1_000_000,
 		p.RequestCost, p.TotalCost,
 		p.CacheHitRate, p.CacheWriteRate, rwRatio,
@@ -281,9 +288,13 @@ func WriteSummary(w io.Writer, s Summary) {
 	var buf bytes.Buffer
 	fmt.Fprintln(&buf, FormatSummaryLine(s))
 	fmt.Fprintf(&buf, "会话统计: %d 次请求, 耗时 %s\n", s.Requests, s.Duration.Round(time.Second))
+	freshInput := s.InputTokens - s.CacheCreation - s.CacheRead
+	if freshInput < 0 {
+		freshInput = 0
+	}
 	fmt.Fprintf(&buf, "  输入: %d tokens (首次 %d, 缓存写入 %d, 缓存读取 %d)\n",
-		s.InputTokens+s.CacheCreation+s.CacheRead,
 		s.InputTokens,
+		freshInput,
 		s.CacheCreation,
 		s.CacheRead)
 	fmt.Fprintf(&buf, "  输出: %d tokens\n", s.OutputTokens)
@@ -313,7 +324,7 @@ func WriteSummary(w io.Writer, s Summary) {
 		}
 		if ms.Cost > 0 {
 			fmt.Fprintf(&buf, "    %s: ¥%.6f (%d 次, %d 输入, %d 输出)\n",
-				displayName, ms.Cost, ms.Requests, ms.InputTokens+ms.CacheCreation+ms.CacheRead, ms.OutputTokens)
+				displayName, ms.Cost, ms.Requests, ms.InputTokens, ms.OutputTokens)
 		}
 	}
 	buf.WriteTo(w)

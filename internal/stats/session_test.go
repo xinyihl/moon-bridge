@@ -37,7 +37,7 @@ func TestFormatUsageLine(t *testing.T) {
 		RequestModel: "moonbridge",
 		ActualModel:  "deepseek-v4-pro",
 		Usage: Usage{
-			InputTokens:              1_000_000,
+			InputTokens:              2_000_000,
 			CacheCreationInputTokens: 500_000,
 			CacheReadInputTokens:     500_000,
 			OutputTokens:             250_000,

@@ -282,13 +282,13 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 	usage := anthropicResponse.Usage
 	if server.stats != nil {
 		server.stats.Record(responsesRequest.Model, anthropicRequest.Model, stats.Usage{
-			InputTokens:              usage.InputTokens,
+			InputTokens:              usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens,
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
 		})
 	}
-	logUsageLine(responsesRequest.Model, anthropicRequest.Model, stats.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CacheCreationInputTokens: usage.CacheCreationInputTokens, CacheReadInputTokens: usage.CacheReadInputTokens}, server.stats)
+	logUsageLine(responsesRequest.Model, anthropicRequest.Model, stats.Usage{InputTokens: usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens, OutputTokens: usage.OutputTokens, CacheCreationInputTokens: usage.CacheCreationInputTokens, CacheReadInputTokens: usage.CacheReadInputTokens}, server.stats)
 	record.AnthropicResponse = anthropicResponse
 	record.OpenAIResponse = openAIResponse
 	server.writeTrace(record)
@@ -368,13 +368,13 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 	}
 	if server.stats != nil {
 		server.stats.Record(responsesRequest.Model, anthropicRequest.Model, stats.Usage{
-			InputTokens:              usage.InputTokens,
+			InputTokens:              usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens,
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
 		})
 	}
-	logUsageLine(responsesRequest.Model, anthropicRequest.Model, stats.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CacheCreationInputTokens: usage.CacheCreationInputTokens, CacheReadInputTokens: usage.CacheReadInputTokens}, server.stats)
+	logUsageLine(responsesRequest.Model, anthropicRequest.Model, stats.Usage{InputTokens: usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens, OutputTokens: usage.OutputTokens, CacheCreationInputTokens: usage.CacheCreationInputTokens, CacheReadInputTokens: usage.CacheReadInputTokens}, server.stats)
 	// Update cache registry from streaming usage signals.
 	server.bridge.UpdateRegistryFromUsage(plan, cache.UsageSignals{
 		InputTokens:              usage.InputTokens,
@@ -720,7 +720,7 @@ func statsUsageFromOpenAIUsage(usage openai.Usage) (stats.Usage, bool) {
 		freshInput = 0
 	}
 	return stats.Usage{
-		InputTokens:          freshInput,
+		InputTokens:          usage.InputTokens,
 		OutputTokens:         usage.OutputTokens,
 		CacheReadInputTokens: cacheRead,
 	}, true

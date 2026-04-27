@@ -499,7 +499,7 @@ func TestResponsesHandlerPassesOpenAIProtocolThroughWithUpstreamModel(t *testing
 		t.Fatalf("upstream input = %q", upstreamRequest.Input)
 	}
 	summary := sessionStats.Summary()
-	if summary.Requests != 2 || summary.InputTokens != 2_000_000 || summary.CacheRead != 200_000 || summary.OutputTokens != 500_000 {
+	if summary.Requests != 2 || summary.InputTokens != 2_200_000 || summary.CacheRead != 200_000 || summary.OutputTokens != 500_000 {
 		t.Fatalf("summary = %+v", summary)
 	}
 	if summary.TotalCost < 3.039999 || summary.TotalCost > 3.040001 {
