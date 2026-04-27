@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"moonbridge/internal/anthropic"
+	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
 )
 
@@ -114,4 +115,13 @@ type ThinkingPrepender interface {
 // OpenAI Responses reasoning summaries.
 type ReasoningExtractor interface {
 	ExtractThinkingBlock(ctx *RequestContext, summary []openai.ReasoningItemSummary) (anthropic.ContentBlock, bool)
+}
+
+// --- Log pipeline capabilities ---
+
+// LogConsumer is called during LogBuffer.Flush before entries are written.
+// It can inspect, modify, or append log entries. Returned entries replace
+// the original batch for output.
+type LogConsumer interface {
+	ConsumeLog(ctx *RequestContext, entries []logger.LogEntry) []logger.LogEntry
 }

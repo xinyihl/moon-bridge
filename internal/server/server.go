@@ -255,6 +255,7 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 		record.OpenAIResponse = payload
 		server.writeTrace(record)
 		writeOpenAIError(writer, status, payload)
+		logger.Flush()
 		return
 	}
 	defer stream.Close()
@@ -591,6 +592,7 @@ func logUsageLine(requestModel, actualModel string, usage stats.Usage, sessionSt
 		fmt.Fprintln(logger.Output(), "---")
 		stats.WriteSummary(logger.Output(), summary)
 	}
+	logger.Flush()
 }
 
 func openAIUsageFromResponse(data []byte, stream bool) (stats.Usage, bool) {

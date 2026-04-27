@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"moonbridge/internal/anthropic"
+	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
 )
 
@@ -24,6 +25,7 @@ type Registry struct {
 	streamInterceptors []StreamInterceptor
 	errorTransformers  []ErrorTransformer
 	sessionProviders   []SessionStateProvider
+	logConsumers        []LogConsumer
 	logger             *slog.Logger
 }
 
@@ -70,6 +72,9 @@ func (r *Registry) Register(p Plugin) {
 	}
 	if v, ok := p.(SessionStateProvider); ok {
 		r.sessionProviders = append(r.sessionProviders, v)
+	}
+	if v, ok := p.(LogConsumer); ok {
+		r.logConsumers = append(r.logConsumers, v)
 	}
 }
 
@@ -303,6 +308,21 @@ func (r *Registry) NewSessionData() map[string]any {
 		}
 	}
 	return data
+}
+
+// ConsumeLog dispatches to all enabled LogConsumer plugins.
+// Returns the modified entries, or the original if no consumers.
+func (r *Registry) ConsumeLog(ctx *RequestContext, entries []logger.LogEntry) []logger.LogEntry {
+	if r == nil || len(r.logConsumers) == 0 {
+		return entries
+	}
+	result := entries
+	for _, p := range r.logConsumers {
+		if p.(Plugin).EnabledForModel(ctx.ModelAlias) {
+			result = p.ConsumeLog(ctx, result)
+		}
+	}
+	return result
 }
 
 // HasEnabled reports whether any plugin is enabled for the given model.

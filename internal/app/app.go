@@ -124,6 +124,11 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 	}
 	defer plugins.ShutdownAll()
 
+	// Wire plugin LogConsumer into the log buffer.
+	logger.SetConsumeFunc(func(entries []logger.LogEntry) []logger.LogEntry {
+		return plugins.ConsumeLog(&plugin.RequestContext{ModelAlias: "*"}, entries)
+	})
+
 	handler := server.New(server.Config{
 		Bridge:      bridge.New(cfg, cache.NewMemoryRegistry(), plugins),
 		Provider:    fallbackProvider,
