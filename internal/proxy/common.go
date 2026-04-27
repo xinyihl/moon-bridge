@@ -69,7 +69,7 @@ func writeTrace(tracer *mbtrace.Tracer, traceErrors io.Writer, record mbtrace.Re
 		return
 	}
 	if _, err := tracer.Write(record); err != nil && traceErrors != nil {
-		fmt.Fprintf(traceErrors, "proxy trace write failed: %v\n", err)
+		fmt.Fprintf(traceErrors, "代理跟踪写入失败: %v\n", err)
 	}
 }
 

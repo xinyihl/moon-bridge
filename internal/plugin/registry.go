@@ -87,7 +87,7 @@ func (r *Registry) InitAll(appCfg interface{ PluginConfig(name string) map[strin
 		if err := p.Init(ctx); err != nil {
 			return fmt.Errorf("plugin %s init failed: %w", p.Name(), err)
 		}
-		r.logger.Info("plugin initialized", "name", p.Name())
+		r.logger.Info("插件已初始化", "name", p.Name())
 	}
 	return nil
 }
@@ -96,7 +96,7 @@ func (r *Registry) InitAll(appCfg interface{ PluginConfig(name string) map[strin
 func (r *Registry) ShutdownAll() {
 	for i := len(r.plugins) - 1; i >= 0; i-- {
 		if err := r.plugins[i].Shutdown(); err != nil {
-			r.logger.Warn("plugin shutdown error", "name", r.plugins[i].Name(), "error", err)
+			r.logger.Warn("插件关闭出错", "name", r.plugins[i].Name(), "error", err)
 		}
 	}
 }

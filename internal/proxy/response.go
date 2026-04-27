@@ -49,18 +49,18 @@ func (server *ResponseServer) ServeHTTP(writer http.ResponseWriter, request *htt
 
 func (server *ResponseServer) serveProxy(writer http.ResponseWriter, request *http.Request) {
 	log := logger.L().With("path", request.URL.Path, "method", request.Method)
-	log.Debug("proxy request received")
+	log.Debug("代理请求已收到")
 	requestBody, err := io.ReadAll(request.Body)
 	if err != nil {
-		log.Error("failed to read request body", "error", err)
-		http.Error(writer, "failed to read request body", http.StatusBadRequest)
+		log.Error("读取请求体失败", "error", err)
+		http.Error(writer, "读取请求体失败", http.StatusBadRequest)
 		return
 	}
 
 	targetURL := upstreamURL(server.upstreamBaseURL, request)
 	upstreamRequest, err := newUpstreamRequest(request, targetURL, requestBody, server.overrideAuth)
 	if err != nil {
-		http.Error(writer, "failed to create upstream request", http.StatusBadGateway)
+		http.Error(writer, "创建上游请求失败", http.StatusBadGateway)
 		return
 	}
 
@@ -82,7 +82,7 @@ func (server *ResponseServer) serveProxy(writer http.ResponseWriter, request *ht
 
 	upstreamResponse, err := server.client.Do(upstreamRequest)
 	if err != nil {
-		log.Error("upstream request failed", "error", err)
+		log.Error("上游请求失败", "error", err)
 		record.Error = map[string]string{"stage": "upstream_request", "message": err.Error()}
 		writeTrace(server.tracer, server.traceErrors, record)
 		http.Error(writer, err.Error(), http.StatusBadGateway)
@@ -101,10 +101,10 @@ func (server *ResponseServer) serveProxy(writer http.ResponseWriter, request *ht
 		Body:       mbtrace.RawJSONOrString(responseBody.Bytes()),
 	}
 	if copyErr != nil {
-		log.Error("copy upstream response failed", "error", copyErr)
+		log.Error("复制上游响应失败", "error", copyErr)
 		record.Error = map[string]string{"stage": "copy_upstream_response", "message": copyErr.Error()}
 	}
-	log.Info("proxy response", "status", upstreamResponse.StatusCode, "bytes", responseBody.Len())
+	log.Info("代理响应", "status", upstreamResponse.StatusCode, "bytes", responseBody.Len())
 	writeTrace(server.tracer, server.traceErrors, record)
 }
 

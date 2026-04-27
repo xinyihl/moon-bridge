@@ -29,19 +29,19 @@ func Run(output io.Writer) {
 }
 
 func WelcomeMessage() string {
-	return "Welcome to " + Name + "!"
+	return "欢迎使用 " + Name + "!"
 }
 
 func RunServer(ctx context.Context, cfg config.Config, errors io.Writer) error {
 	switch cfg.Mode {
 	case config.ModeTransform:
-		logger.Info("starting server", "mode", cfg.Mode, "addr", cfg.Addr)
+		logger.Info("启动服务器", "mode", cfg.Mode, "addr", cfg.Addr)
 		return runTransform(ctx, cfg, errors)
 	case config.ModeCaptureResponse:
-		logger.Info("starting server", "mode", cfg.Mode, "addr", cfg.Addr)
+		logger.Info("启动服务器", "mode", cfg.Mode, "addr", cfg.Addr)
 		return runCaptureResponse(ctx, cfg, errors)
 	case config.ModeCaptureAnthropic:
-		logger.Info("starting server", "mode", cfg.Mode, "addr", cfg.Addr)
+		logger.Info("启动服务器", "mode", cfg.Mode, "addr", cfg.Addr)
 		return runCaptureAnthropic(ctx, cfg, errors)
 	default:
 		return fmt.Errorf("unsupported mode %q", cfg.Mode)
@@ -134,12 +134,12 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 // Returns nil when no default provider is configured (all models use explicit routing).
 func resolveDefaultClient(pm *provider.ProviderManager, errors io.Writer) *anthropic.Client {
 	if pm.DefaultKey() == "" {
-		logger.Warn("no default provider configured; web search probing and server fallback disabled")
+		logger.Warn("未配置默认提供商，禁用网页搜索探测和服务器回退")
 		return nil
 	}
 	client, err := pm.ClientForKey(pm.DefaultKey())
 	if err != nil {
-		logger.Warn("default provider client not available", "error", err)
+		logger.Warn("默认提供商客户端不可用", "error", err)
 		return nil
 	}
 	return client
@@ -202,20 +202,20 @@ func resolvePerProviderWebSearch(ctx context.Context, cfg config.Config, pm *pro
 	for _, key := range pm.ProviderKeys() {
 		if pm.ProtocolForKey(key) != "anthropic" {
 			pm.SetResolvedWebSearch(key, "disabled")
-			logger.Info("web_search disabled for non-anthropic provider", "provider", key)
+			logger.Info("非 Anthropic 提供商禁用网页搜索", "provider", key)
 			continue
 		}
 		support := cfg.WebSearchForProvider(key)
 		switch support {
 		case config.WebSearchSupportDisabled:
 			pm.SetResolvedWebSearch(key, "disabled")
-			logger.Info("web_search disabled by config", "provider", key)
+			logger.Info("配置禁用网页搜索", "provider", key)
 		case config.WebSearchSupportEnabled:
 			pm.SetResolvedWebSearch(key, "enabled")
-			logger.Info("web_search forced enabled by config", "provider", key)
+			logger.Info("配置强制启用网页搜索", "provider", key)
 		case config.WebSearchSupportInjected:
 			pm.SetResolvedWebSearch(key, "injected")
-			logger.Info("web_search injected mode enabled", "provider", key)
+			logger.Info("网页搜索注入模式已启用", "provider", key)
 		default:
 			resolved := probeProviderWebSearch(ctx, key, pm, errors)
 			pm.SetResolvedWebSearch(key, resolved)
@@ -244,13 +244,13 @@ func resolveModelWebSearch(ctx context.Context, alias string, modelWS config.Web
 	switch modelWS {
 	case config.WebSearchSupportDisabled:
 		pm.SetResolvedWebSearch(modelKey, "disabled")
-		logger.Info("web_search disabled by model config", "model", alias)
+		logger.Info("模型配置禁用网页搜索", "model", alias)
 	case config.WebSearchSupportEnabled:
 		pm.SetResolvedWebSearch(modelKey, "enabled")
-		logger.Info("web_search forced enabled by model config", "model", alias)
+		logger.Info("模型配置强制启用网页搜索", "model", alias)
 	case config.WebSearchSupportInjected:
 		pm.SetResolvedWebSearch(modelKey, "injected")
-		logger.Info("web_search injected mode by model config", "model", alias)
+		logger.Info("模型配置启用网页搜索注入模式", "model", alias)
 	default:
 		// Auto: probe using this model's upstream name.
 		resolved := probeModelWebSearch(ctx, alias, pm, errors)
@@ -263,13 +263,13 @@ func resolveModelWebSearch(ctx context.Context, alias string, modelWS config.Web
 func probeProviderWebSearch(ctx context.Context, key string, pm *provider.ProviderManager, errors io.Writer) string {
 	client, err := pm.ClientForKey(key)
 	if err != nil {
-		logger.Warn("web_search probe skipped: client not available", "provider", key, "error", err)
+		logger.Warn("网页搜索探测跳过：客户端不可用", "provider", key, "error", err)
 		return "disabled"
 	}
 
 	upstreamModel := pm.FirstUpstreamModelForKey(key)
 	if upstreamModel == "" {
-		logger.Warn("web_search auto probe skipped: no model routes to provider", "provider", key)
+		logger.Warn("网页搜索自动探测跳过：无模型路由到提供商", "provider", key)
 		return "disabled"
 	}
 
@@ -277,16 +277,16 @@ func probeProviderWebSearch(ctx context.Context, key string, pm *provider.Provid
 	defer cancel()
 	supported, err := client.ProbeWebSearch(probeCtx, upstreamModel)
 	if err != nil {
-		logger.Warn("web_search auto probe failed", "provider", key, "error", err)
-		fmt.Fprintf(errors, "web_search auto probe failed for provider %s: %v\n", key, err)
+		logger.Warn("网页搜索自动探测失败", "provider", key, "error", err)
+		fmt.Fprintf(errors, "网页搜索自动探测失败（提供商 %s）: %v\n", key, err)
 		return "disabled"
 	}
 	if !supported {
-		logger.Warn("web_search unsupported by provider", "provider", key, "model", upstreamModel)
-		fmt.Fprintf(errors, "web_search unsupported by provider %s\n", key)
+		logger.Warn("提供商不支持网页搜索", "provider", key, "model", upstreamModel)
+		fmt.Fprintf(errors, "提供商 %s 不支持网页搜索\n", key)
 		return "disabled"
 	}
-	logger.Info("web_search supported by provider", "provider", key, "model", upstreamModel)
+	logger.Info("提供商支持网页搜索", "provider", key, "model", upstreamModel)
 	return "enabled"
 }
 
@@ -294,23 +294,23 @@ func probeProviderWebSearch(ctx context.Context, key string, pm *provider.Provid
 func probeModelWebSearch(ctx context.Context, modelAlias string, pm *provider.ProviderManager, errors io.Writer) string {
 	upstreamModel, client, err := pm.ClientFor(modelAlias)
 	if err != nil {
-		logger.Warn("web_search model probe skipped: client not available", "model", modelAlias, "error", err)
+		logger.Warn("网页搜索模型探测跳过：客户端不可用", "model", modelAlias, "error", err)
 		return "disabled"
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	supported, err := client.ProbeWebSearch(probeCtx, upstreamModel)
 	if err != nil {
-		logger.Warn("web_search model probe failed", "model", modelAlias, "error", err)
-		fmt.Fprintf(errors, "web_search model probe failed for %s: %v\n", modelAlias, err)
+		logger.Warn("网页搜索模型探测失败", "model", modelAlias, "error", err)
+		fmt.Fprintf(errors, "网页搜索模型探测失败（%s）: %v\n", modelAlias, err)
 		return "disabled"
 	}
 	if !supported {
-		logger.Warn("web_search unsupported by model", "model", modelAlias)
-		fmt.Fprintf(errors, "web_search unsupported by model %s\n", modelAlias)
+		logger.Warn("模型不支持网页搜索", "model", modelAlias)
+		fmt.Fprintf(errors, "模型 %s 不支持网页搜索\n", modelAlias)
 		return "disabled"
 	}
-	logger.Info("web_search supported by model", "model", modelAlias)
+	logger.Info("模型支持网页搜索", "model", modelAlias)
 	return "enabled"
 }
 
@@ -326,7 +326,7 @@ func runCaptureResponse(ctx context.Context, cfg config.Config, errors io.Writer
 	if err != nil {
 		return err
 	}
-	logger.Info("response proxy initialized", "upstream", cfg.ResponseProxy.ProviderBaseURL)
+	logger.Info("响应代理已初始化", "upstream", cfg.ResponseProxy.ProviderBaseURL)
 	return runHTTPServer(ctx, cfg.Addr, handler, errors, nil)
 }
 
@@ -343,17 +343,17 @@ func runCaptureAnthropic(ctx context.Context, cfg config.Config, errors io.Write
 	if err != nil {
 		return err
 	}
-	logger.Info("anthropic proxy initialized", "upstream", cfg.AnthropicProxy.ProviderBaseURL)
+	logger.Info("Anthropic 代理已初始化", "upstream", cfg.AnthropicProxy.ProviderBaseURL)
 	return runHTTPServer(ctx, cfg.Addr, handler, errors, nil)
 }
 
 func logTrace(errors io.Writer, label string, tracer *mbtrace.Tracer) {
 	if !tracer.Enabled() {
-		fmt.Fprintf(errors, "%s trace disabled\n", label)
+		fmt.Fprintf(errors, "%s 跟踪已禁用\n", label)
 		return
 	}
-	logger.Info("trace enabled", "label", label, "dir", tracer.Directory())
-	fmt.Fprintf(errors, "%s trace enabled at %s\n", label, tracer.Directory())
+	logger.Info("跟踪已启用", "label", label, "dir", tracer.Directory())
+	fmt.Fprintf(errors, "%s 跟踪已启用于 %s\n", label, tracer.Directory())
 }
 
 func transformTraceRoot() string {
@@ -378,8 +378,8 @@ func runHTTPServer(ctx context.Context, addr string, handler http.Handler, error
 	httpServer := &http.Server{Addr: addr, Handler: handler}
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(errors, "%s listening on %s\n", Name, addr)
-		logger.Info("http server listening", "addr", addr)
+		fmt.Fprintf(errors, "%s 监听于 %s\n", Name, addr)
+		logger.Info("HTTP 服务器监听中", "addr", addr)
 		errCh <- httpServer.ListenAndServe()
 	}()
 
@@ -398,7 +398,7 @@ func runHTTPServer(ctx context.Context, addr string, handler http.Handler, error
 		if err == http.ErrServerClosed {
 			return nil
 		}
-		logger.Error("http server error", "error", err)
+		logger.Error("HTTP 服务器错误", "error", err)
 		return err
 	}
 }

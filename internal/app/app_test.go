@@ -13,7 +13,7 @@ import (
 )
 
 func TestWelcomeMessage(t *testing.T) {
-	want := "Welcome to Moon Bridge!"
+	want := "欢迎使用 Moon Bridge!"
 
 	if got := WelcomeMessage(); got != want {
 		t.Fatalf("WelcomeMessage() = %q, want %q", got, want)
@@ -25,7 +25,7 @@ func TestRunWritesWelcomeMessage(t *testing.T) {
 
 	Run(&output)
 
-	want := "Welcome to Moon Bridge!\n"
+	want := "欢迎使用 Moon Bridge!\n"
 	if got := output.String(); got != want {
 		t.Fatalf("Run() wrote %q, want %q", got, want)
 	}
@@ -268,7 +268,7 @@ func TestPricingIndexIncludesProviderModelSlugs(t *testing.T) {
 	}
 
 	// Verify Record() accumulates cost for provider/model slug.
-	sessionStats.Record("deepseek/deepseek-v4-flash", stats.Usage{
+	sessionStats.Record("deepseek/deepseek-v4-flash", "", stats.Usage{
 		InputTokens: 1000, OutputTokens: 200,
 	})
 	summary := sessionStats.Summary()

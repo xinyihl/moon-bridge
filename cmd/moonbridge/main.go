@@ -44,7 +44,7 @@ func main() {
 	if err := logger.Init(logger.Config{Level: logger.Level(cfg.LogLevel), Format: cfg.LogFormat, Output: os.Stderr}); err != nil {
 		log.Fatal(err)
 	}
-	logger.Info("config loaded", "path", *configPath, "mode", cfg.Mode, "addr", cfg.Addr)
+	logger.Info("配置已加载", "path", *configPath, "mode", cfg.Mode, "addr", cfg.Addr)
 	if *mode != "" {
 		cfg.Mode = config.Mode(*mode)
 		if err := cfg.Validate(); err != nil {
@@ -91,6 +91,7 @@ func printCodexConfigToml(modelAlias string, baseURL string, codexHome string, c
 	route := cfg.RouteFor(modelAlias)
 	fmt.Printf("model = %q\n", modelAlias)
 	fmt.Println(`model_provider = "moonbridge"`)
+	fmt.Println(`service_tier = "flex"`)
 	if route.ContextWindow > 0 {
 		fmt.Printf("model_context_window = %d\n", route.ContextWindow)
 	}

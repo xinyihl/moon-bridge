@@ -65,60 +65,60 @@ func NewClient(cfg ClientConfig) *Client {
 func (client *Client) CreateMessage(ctx context.Context, request MessageRequest) (MessageResponse, error) {
 	request.Stream = false
 	log := logger.L().With("model", request.Model)
-	log.Debug("creating message", "max_tokens", request.MaxTokens, "messages", len(request.Messages), "tools", len(request.Tools))
+	log.Debug("正在创建消息", "max_tokens", request.MaxTokens, "messages", len(request.Messages), "tools", len(request.Tools))
 
 	httpRequest, err := client.newRequest(ctx, request)
 	if err != nil {
-		log.Error("failed to build request", "error", err)
+		log.Error("构建请求失败", "error", err)
 		return MessageResponse{}, err
 	}
 
 	response, err := client.client.Do(httpRequest)
 	if err != nil {
-		log.Error("request failed", "error", err)
+		log.Error("请求失败", "error", err)
 		return MessageResponse{}, err
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		err := decodeProviderError(response)
-		log.Error("provider error", "status", response.StatusCode, "error", err)
+		log.Error("提供商错误", "status", response.StatusCode, "error", err)
 		return MessageResponse{}, err
 	}
 
 	var message MessageResponse
 	if err := json.NewDecoder(response.Body).Decode(&message); err != nil {
-		log.Error("failed to decode response", "error", err)
+		log.Error("解析响应失败", "error", err)
 		return MessageResponse{}, err
 	}
-	log.Info("message created", "id", message.ID, "stop_reason", message.StopReason, "input_tokens", message.Usage.InputTokens, "output_tokens", message.Usage.OutputTokens)
+	log.Info("消息已创建", "id", message.ID, "stop_reason", message.StopReason, "input_tokens", message.Usage.InputTokens, "output_tokens", message.Usage.OutputTokens)
 	return message, nil
 }
 
 func (client *Client) StreamMessage(ctx context.Context, request MessageRequest) (Stream, error) {
 	request.Stream = true
 	log := logger.L().With("model", request.Model)
-	log.Debug("starting stream", "max_tokens", request.MaxTokens, "messages", len(request.Messages), "tools", len(request.Tools))
+	log.Debug("开始流式传输", "max_tokens", request.MaxTokens, "messages", len(request.Messages), "tools", len(request.Tools))
 
 	httpRequest, err := client.newRequest(ctx, request)
 	if err != nil {
-		log.Error("failed to build request", "error", err)
+		log.Error("构建请求失败", "error", err)
 		return nil, err
 	}
 
 	response, err := client.client.Do(httpRequest)
 	if err != nil {
-		log.Error("request failed", "error", err)
+		log.Error("请求失败", "error", err)
 		return nil, err
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		defer response.Body.Close()
 		err := decodeProviderError(response)
-		log.Error("provider error", "status", response.StatusCode, "error", err)
+		log.Error("提供商错误", "status", response.StatusCode, "error", err)
 		return nil, err
 	}
 
-	log.Debug("stream connected")
+	log.Debug("流已连接")
 	return &sseStream{body: response.Body, scanner: bufio.NewScanner(response.Body)}, nil
 }
 

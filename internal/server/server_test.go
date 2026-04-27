@@ -259,7 +259,7 @@ func TestBuildModelInfosFromConfigIncludesProviderModelsBeforeRouteFallback(t *t
 	if strings.Join(slugs, ",") != strings.Join(want, ",") {
 		t.Fatalf("slugs = %v, want %v", slugs, want)
 	}
-	if models[0].DisplayName != "Model A" || models[0].ContextWindow == nil || *models[0].ContextWindow != 1000 {
+	if models[0].DisplayName != "Model A(p1)" || models[0].ContextWindow == nil || *models[0].ContextWindow != 1000 {
 		t.Fatalf("provider metadata not preserved: %+v", models[0])
 	}
 }
@@ -470,7 +470,7 @@ func TestResponsesHandlerPassesOpenAIProtocolThroughWithUpstreamModel(t *testing
 			CacheReadPrice: 0.2,
 		},
 	})
-	sessionStats.Record("image", stats.Usage{InputTokens: 1_000_000})
+	sessionStats.Record("image", "", stats.Usage{InputTokens: 1_000_000})
 	handler := server.New(server.Config{
 		Bridge: bridge.New(config.Config{
 			Routes: map[string]config.RouteEntry{

@@ -173,10 +173,10 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session
 	}
 	pluginCtx := bridge.pluginRequestContext(request.Model, sess, request.Reasoning, opt)
 	log := logger.L().With("model", request.Model)
-	log.Debug("converting OpenAI request to Anthropic")
+	log.Debug("正在将 OpenAI 请求转换为 Anthropic 格式")
 	if request.Model == "" {
-		log.Warn("model is required")
-		return anthropic.MessageRequest{}, cache.CacheCreationPlan{}, invalidRequest("model is required", "model", "missing_required_parameter")
+		log.Warn("模型名称是必需的")
+		return anthropic.MessageRequest{}, cache.CacheCreationPlan{}, invalidRequest("模型名称是必需的", "model", "missing_required_parameter")
 	}
 
 	conversionContext := bridge.ConversionContext(request)
@@ -231,11 +231,11 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session
 
 	plan, err := bridge.planCache(request, converted)
 	if err != nil {
-		log.Warn("cache planning failed", "error", err)
+		log.Warn("缓存规划失败", "error", err)
 		return anthropic.MessageRequest{}, cache.CacheCreationPlan{}, err
 	}
 	bridge.injectCacheControl(&converted, plan)
-	log.Debug("converted request", "anthropic_model", converted.Model, "max_tokens", converted.MaxTokens, "messages", len(converted.Messages), "tools", len(converted.Tools), "cache_mode", plan.Mode)
+	log.Debug("请求已转换", "anthropic_model", converted.Model, "max_tokens", converted.MaxTokens, "messages", len(converted.Messages), "tools", len(converted.Tools), "cache_mode", plan.Mode)
 
 	return converted, plan, nil
 }
@@ -259,7 +259,7 @@ func (bridge *Bridge) UpdateRegistryFromUsage(plan cache.CacheCreationPlan, sign
 		return
 	}
 	bridge.registry.UpdateFromUsage(key, signals, inputTokens, parseTTL(plan.TTL))
-	logger.L().Debug("updated cache registry (stream)", "key", key, "input_tokens", inputTokens, "cache_creation", signals.CacheCreationInputTokens, "cache_read", signals.CacheReadInputTokens)
+	logger.L().Debug("缓存注册表已更新（流式）", "key", key, "input_tokens", inputTokens, "cache_creation", signals.CacheCreationInputTokens, "cache_read", signals.CacheReadInputTokens)
 }
 
 func (bridge *Bridge) FromAnthropicWithPlan(response anthropic.MessageResponse, model string, plan cache.CacheCreationPlan) openai.Response {
@@ -268,7 +268,7 @@ func (bridge *Bridge) FromAnthropicWithPlan(response anthropic.MessageResponse, 
 
 func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.MessageResponse, model string, plan cache.CacheCreationPlan, context ConversionContext, sess *session.Session) openai.Response {
 	log := logger.L().With("model", model)
-	log.Debug("converting Anthropic response to OpenAI", "provider_id", response.ID, "stop_reason", response.StopReason)
+	log.Debug("正在将 Anthropic 响应转换为 OpenAI 格式", "provider_id", response.ID, "stop_reason", response.StopReason)
 	registryKey := plan.PrefixKey
 	if registryKey == "" {
 		registryKey = plan.LocalKey
@@ -279,7 +279,7 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 			CacheCreationInputTokens: response.Usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     response.Usage.CacheReadInputTokens,
 		}, response.Usage.InputTokens, parseTTL(plan.TTL))
-		log.Debug("updated cache registry", "key", registryKey, "input_tokens", response.Usage.InputTokens, "cache_creation", response.Usage.CacheCreationInputTokens, "cache_read", response.Usage.CacheReadInputTokens)
+		log.Debug("缓存注册表已更新", "key", registryKey, "input_tokens", response.Usage.InputTokens, "cache_creation", response.Usage.CacheCreationInputTokens, "cache_read", response.Usage.CacheReadInputTokens)
 	}
 	if sess != nil {
 		bridge.plugins.RememberResponseContent(model, response.Content, sess.ExtensionData)
@@ -408,7 +408,7 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 		IncompleteDetails: incomplete,
 	}
 	bridge.plugins.PostProcessResponse(bridge.pluginRequestContext(model, sess, nil, RequestOptions{}), &openAIResponse)
-	log.Info("response converted", "output_items", len(openAIResponse.Output), "status", openAIResponse.Status)
+	log.Info("响应已转换", "output_items", len(openAIResponse.Output), "status", openAIResponse.Status)
 	return openAIResponse
 }
 

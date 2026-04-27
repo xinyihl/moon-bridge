@@ -152,7 +152,7 @@ type ReasoningLevelPresetDTO struct {
 func (server *Server) handleModels(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		writeOpenAIError(writer, http.StatusMethodNotAllowed, openai.ErrorResponse{Error: openai.ErrorObject{
-			Message: "only GET requests are supported",
+			Message: "仅支持 GET 请求",
 			Type:    "invalid_request_error",
 			Code:    "method_not_allowed",
 		}})
@@ -174,11 +174,11 @@ func (server *Server) listModels() []ModelInfo {
 
 func (server *Server) handleResponses(writer http.ResponseWriter, request *http.Request) {
 	log := logger.L().With("path", request.URL.Path, "method", request.Method, "remote", request.RemoteAddr)
-	log.Debug("request received")
+	log.Debug("收到请求")
 	if request.Method != http.MethodPost {
-		log.Warn("method not allowed", "method", request.Method)
+		log.Warn("方法不允许", "method", request.Method)
 		writeOpenAIError(writer, http.StatusMethodNotAllowed, openai.ErrorResponse{Error: openai.ErrorObject{
-			Message: "method not allowed",
+			Message: "方法不允许",
 			Type:    "invalid_request_error",
 			Code:    "method_not_allowed",
 		}})
@@ -190,9 +190,9 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 	body, err := io.ReadAll(request.Body)
 	record := mbtrace.Record{HTTPRequest: mbtrace.NewHTTPRequest(request), OpenAIRequest: mbtrace.RawJSONOrString(body)}
 	if err != nil {
-		log.Error("failed to read request body", "error", err)
+		log.Error("读取请求体失败", "error", err)
 		payload := openai.ErrorResponse{Error: openai.ErrorObject{
-			Message: "failed to read request body",
+			Message: "读取请求体失败",
 			Type:    "invalid_request_error",
 			Code:    "invalid_request_body",
 		}}
@@ -205,9 +205,9 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 
 	var responsesRequest openai.ResponsesRequest
 	if err := json.Unmarshal(body, &responsesRequest); err != nil {
-		log.Warn("invalid JSON request body", "error", err)
+		log.Warn("无效的 JSON 请求体", "error", err)
 		payload := openai.ErrorResponse{Error: openai.ErrorObject{
-			Message: "invalid JSON request body",
+			Message: "无效的 JSON 请求体",
 			Type:    "invalid_request_error",
 			Code:    "invalid_json",
 		}}
@@ -232,7 +232,7 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 	conversionContext := server.bridge.ConversionContext(responsesRequest)
 	record.AnthropicRequest = anthropicRequest
 	if err != nil {
-		log.Warn("failed to convert to anthropic", "error", err)
+		log.Warn("转换为 Anthropic 格式失败", "error", err)
 		status, payload := server.bridge.ErrorResponseForModel(responsesRequest.Model, err)
 		record.Error = traceError("convert_to_anthropic", err)
 		record.OpenAIResponse = payload
@@ -244,7 +244,7 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 	// Resolve the provider for this request.
 	effectiveProvider := server.resolveProvider(responsesRequest.Model, server.bridge.ProviderFor(responsesRequest.Model))
 	if effectiveProvider == nil {
-		log.Error("no provider available for model", "model", responsesRequest.Model)
+		log.Error("模型无可用提供商", "model", responsesRequest.Model)
 		writeOpenAIError(writer, http.StatusBadGateway, openai.ErrorResponse{Error: openai.ErrorObject{
 			Message: fmt.Sprintf("no upstream provider configured for model %q", responsesRequest.Model),
 			Type:    "server_error",
@@ -254,12 +254,12 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 	}
 
 	if responsesRequest.Stream {
-		log.Debug("handling streaming request", "model", responsesRequest.Model)
+		log.Debug("处理流式请求", "model", responsesRequest.Model)
 		server.handleStream(writer, request, responsesRequest, anthropicRequest, plan, record, conversionContext, sess, effectiveProvider)
 		return
 	}
 
-	log.Debug("sending non-streaming request to provider", "model", anthropicRequest.Model)
+	log.Debug("发送非流式请求到提供商", "model", anthropicRequest.Model)
 	anthropicResponse, err := effectiveProvider.CreateMessage(request.Context(), anthropicRequest)
 	if err != nil {
 		status, payload := server.bridge.ErrorResponseForModel(responsesRequest.Model, err)
@@ -270,7 +270,7 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 			Message:      payload.Error.Message,
 		})
 		fmt.Fprintln(logger.Output(), errLine)
-		log.Error("provider request failed", "status", status)
+		log.Error("提供商请求失败", "status", status)
 		record.Error = traceError("provider_create_message", err)
 		record.OpenAIResponse = payload
 		server.writeTrace(record)
@@ -281,7 +281,7 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 	openAIResponse := server.bridge.FromAnthropicWithPlanAndContext(anthropicResponse, responsesRequest.Model, plan, conversionContext, sess)
 	usage := anthropicResponse.Usage
 	if server.stats != nil {
-		server.stats.Record(responsesRequest.Model, stats.Usage{
+		server.stats.Record(responsesRequest.Model, anthropicRequest.Model, stats.Usage{
 			InputTokens:              usage.InputTokens,
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,
@@ -297,7 +297,7 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 
 func (server *Server) handleStream(writer http.ResponseWriter, request *http.Request, responsesRequest openai.ResponsesRequest, anthropicRequest anthropic.MessageRequest, plan cache.CacheCreationPlan, record mbtrace.Record, context bridge.ConversionContext, sess *session.Session, provider Provider) {
 	log := logger.L().With("model", responsesRequest.Model)
-	log.Debug("starting stream")
+	log.Debug("开始流式传输")
 	stream, err := provider.StreamMessage(request.Context(), anthropicRequest)
 	if err != nil {
 		status, payload := server.bridge.ErrorResponseForModel(responsesRequest.Model, err)
@@ -308,7 +308,7 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 			Message:      payload.Error.Message,
 		})
 		fmt.Fprintln(logger.Output(), errLine)
-		log.Error("provider stream failed", "status", status)
+		log.Error("提供商流式传输失败", "status", status)
 		record.Error = traceError("provider_stream_message", err)
 		record.OpenAIResponse = payload
 		server.writeTrace(record)
@@ -330,7 +330,7 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 		if err != nil {
 			events = append(events, anthropic.StreamEvent{Type: "error", Error: &anthropic.ErrorObject{Type: "provider_stream_error", Message: err.Error()}})
 			record.Error = traceError("provider_stream_next", err)
-			log.Error("stream read error", "error", err)
+			log.Error("流式读取错误", "error", err)
 			break
 		}
 		events = append(events, event)
@@ -367,7 +367,7 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 		}
 	}
 	if server.stats != nil {
-		server.stats.Record(responsesRequest.Model, stats.Usage{
+		server.stats.Record(responsesRequest.Model, anthropicRequest.Model, stats.Usage{
 			InputTokens:              usage.InputTokens,
 			OutputTokens:             usage.OutputTokens,
 			CacheCreationInputTokens: usage.CacheCreationInputTokens,
@@ -468,7 +468,7 @@ func (server *Server) writeTrace(record mbtrace.Record) {
 
 func (server *Server) writeTraceCategory(category string, requestNumber uint64, record mbtrace.Record) {
 	if _, err := server.tracer.WriteNumbered(category, requestNumber, record); err != nil && server.traceErrors != nil {
-		fmt.Fprintf(server.traceErrors, "trace %s write failed: %v\n", category, err)
+		fmt.Fprintf(server.traceErrors, "跟踪 %s 写入失败: %v\n", category, err)
 	}
 }
 
@@ -521,9 +521,9 @@ func (w *anthropicClientWrapper) StreamMessage(ctx context.Context, request anth
 func (server *Server) handleOpenAIResponse(writer http.ResponseWriter, request *http.Request, responsesRequest openai.ResponsesRequest, providerKey string, record mbtrace.Record) {
 	log := logger.L().With("path", request.URL.Path, "method", request.Method)
 	if server.providerMgr == nil {
-		log.Error("no provider manager configured for openai protocol")
+		log.Error("未配置 OpenAI 协议的提供商管理器")
 		writeOpenAIError(writer, http.StatusBadGateway, openai.ErrorResponse{Error: openai.ErrorObject{
-			Message: "provider routing not configured",
+			Message: "提供商路由未配置",
 			Type:    "server_error",
 			Code:    "internal_error",
 		}})
@@ -538,9 +538,9 @@ func (server *Server) handleOpenAIResponse(writer http.ResponseWriter, request *
 	baseURL := server.providerMgr.ProviderBaseURL(resolvedKey)
 	apiKey := server.providerMgr.ProviderAPIKey(resolvedKey)
 	if baseURL == "" {
-		log.Error("openai provider has no base_url", "provider", providerKey)
+		log.Error("OpenAI 提供商缺少 base_url", "provider", providerKey)
 		writeOpenAIError(writer, http.StatusBadGateway, openai.ErrorResponse{Error: openai.ErrorObject{
-			Message: "provider not configured",
+			Message: "提供商未配置",
 			Type:    "server_error",
 			Code:    "internal_error",
 		}})
@@ -558,9 +558,9 @@ func (server *Server) handleOpenAIResponse(writer http.ResponseWriter, request *
 
 	body, err := json.Marshal(upstreamRequest)
 	if err != nil {
-		log.Error("failed to marshal request", "error", err)
+		log.Error("序列化请求失败", "error", err)
 		writeOpenAIError(writer, http.StatusInternalServerError, openai.ErrorResponse{Error: openai.ErrorObject{
-			Message: "internal error",
+			Message: "内部错误",
 			Type:    "server_error",
 			Code:    "internal_error",
 		}})
@@ -570,9 +570,9 @@ func (server *Server) handleOpenAIResponse(writer http.ResponseWriter, request *
 	// Create upstream request
 	upstreamReq, err := http.NewRequestWithContext(request.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
-		log.Error("failed to create upstream request", "error", err)
+		log.Error("创建上游请求失败", "error", err)
 		writeOpenAIError(writer, http.StatusBadGateway, openai.ErrorResponse{Error: openai.ErrorObject{
-			Message: "upstream request failed",
+			Message: "上游请求失败",
 			Type:    "server_error",
 			Code:    "internal_error",
 		}})
@@ -594,7 +594,7 @@ func (server *Server) handleOpenAIResponse(writer http.ResponseWriter, request *
 			Message:      err.Error(),
 		})
 		fmt.Fprintln(logger.Output(), errLine)
-		log.Error("openai upstream failed", "status", http.StatusBadGateway)
+		log.Error("OpenAI 上游请求失败", "status", http.StatusBadGateway)
 		record.Error = map[string]string{"stage": "openai_upstream", "message": err.Error()}
 		server.writeTrace(record)
 		writeOpenAIError(writer, http.StatusBadGateway, openai.ErrorResponse{Error: openai.ErrorObject{
@@ -620,11 +620,11 @@ func (server *Server) handleOpenAIResponse(writer http.ResponseWriter, request *
 		target = io.MultiWriter(writer, &captured)
 	}
 	if _, err := io.Copy(target, upstreamResp.Body); err != nil {
-		log.Error("copy upstream response failed", "error", err)
+		log.Error("复制上游响应失败", "error", err)
 		return
 	}
 	if usage, ok := openAIUsageFromResponse(captured.Bytes(), responsesRequest.Stream); ok {
-		server.stats.Record(responsesRequest.Model, usage)
+		server.stats.Record(responsesRequest.Model, upstreamRequest.Model, usage)
 		logUsageLine(responsesRequest.Model, upstreamRequest.Model, usage, server.stats)
 	}
 }
@@ -758,7 +758,7 @@ func (server *Server) maybeWrapInjectedSearch(client *anthropic.Client, modelAli
 		tavilyKey := server.appConfig.WebSearchTavilyKeyForModel(modelAlias)
 		firecrawlKey := server.appConfig.WebSearchFirecrawlKeyForModel(modelAlias)
 		maxRounds := server.appConfig.WebSearchMaxRoundsForModel(modelAlias)
-		logger.L().Debug("wrapping with injected search orchestrator", "model", modelAlias)
+		logger.L().Debug("包装注入式搜索编排器", "model", modelAlias)
 		return websearchinjected.WrapProvider(client, tavilyKey, firecrawlKey, maxRounds)
 	}
 	return &anthropicClientWrapper{client: client}
@@ -785,8 +785,9 @@ func (server *Server) resolveRequestOptions(modelAlias string, providerKey strin
 func BuildModelInfoFromRoute(alias string, ownedBy string, route config.RouteEntry) ModelInfo {
 	displayName := route.DisplayName
 	if displayName == "" {
-		displayName = alias + " (" + ownedBy + ")"
+		displayName = alias
 	}
+	displayName = displayName + "(" + ownedBy + ")"
 	return newModelInfo(alias, displayName, route.Description, route.ContextWindow,
 		route.DefaultReasoningLevel, route.SupportedReasoningLevels,
 		route.SupportsReasoningSummaries, route.DefaultReasoningSummary)
@@ -797,8 +798,9 @@ func BuildModelInfoFromRoute(alias string, ownedBy string, route config.RouteEnt
 func BuildModelInfoFromProviderModel(slug string, ownedBy string, meta config.ModelMeta) ModelInfo {
 	displayName := meta.DisplayName
 	if displayName == "" {
-		displayName = slug + " (" + ownedBy + ")"
+		displayName = slug
 	}
+	displayName = displayName + "(" + ownedBy + ")"
 	return newModelInfo(slug, displayName, meta.Description, meta.ContextWindow,
 		meta.DefaultReasoningLevel, meta.SupportedReasoningLevels,
 		meta.SupportsReasoningSummaries, meta.DefaultReasoningSummary)

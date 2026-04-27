@@ -43,6 +43,9 @@ type SessionStats struct {
 	// Per-model breakdown
 	byModel map[string]*ModelStats
 	pricing map[string]ModelPricing
+
+	// Maps request model alias -> actual upstream model name
+	actualModelNames map[string]string
 }
 
 // ModelStats tracks usage and cost for a specific model.
@@ -58,9 +61,10 @@ type ModelStats struct {
 // NewSessionStats creates a new session stats tracker.
 func NewSessionStats() *SessionStats {
 	return &SessionStats{
-		startTime: time.Now(),
-		byModel:   make(map[string]*ModelStats),
-		pricing:   make(map[string]ModelPricing),
+		startTime:        time.Now(),
+		byModel:          make(map[string]*ModelStats),
+		pricing:          make(map[string]ModelPricing),
+		actualModelNames: make(map[string]string),
 	}
 }
 
@@ -73,7 +77,7 @@ func (s *SessionStats) SetPricing(pricing map[string]ModelPricing) {
 
 // Record adds a usage record to the session stats.
 // If pricing is configured for the model, cost is computed automatically.
-func (s *SessionStats) Record(model string, usage Usage) {
+func (s *SessionStats) Record(model string, actualModel string, usage Usage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -100,6 +104,11 @@ func (s *SessionStats) Record(model string, usage Usage) {
 		s.byModel[model].CacheCreation += int64(usage.CacheCreationInputTokens)
 		s.byModel[model].CacheRead += int64(usage.CacheReadInputTokens)
 		s.byModel[model].Cost += cost
+
+		// Track the actual model name for display
+		if actualModel != "" {
+			s.actualModelNames[model] = actualModel
+		}
 	}
 }
 
@@ -169,6 +178,7 @@ func (s *SessionStats) Summary() Summary {
 		EffectiveInputSaved: s.totalCacheRead,
 		TotalCost:           s.totalCost,
 		ByModel:             copyByModel(s.byModel),
+		ActualModelNames:    copyStringMap(s.actualModelNames),
 	}
 }
 
@@ -180,6 +190,17 @@ func copyByModel(src map[string]*ModelStats) map[string]*ModelStats {
 	for k, v := range src {
 		cp := *v
 		dst[k] = &cp
+	}
+	return dst
+}
+
+func copyStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
 	}
 	return dst
 }
@@ -196,6 +217,7 @@ type Summary struct {
 	EffectiveInputSaved int64
 	TotalCost           float64
 	ByModel             map[string]*ModelStats
+	ActualModelNames    map[string]string
 }
 
 // LogValue implements slog.LogValuer for structured logging.
@@ -299,9 +321,13 @@ func WriteSummary(w io.Writer, s Summary) {
 	}
 	fmt.Fprintf(w, "  累计费用: ¥%.6f\n", s.TotalCost)
 	for model, ms := range s.ByModel {
+		displayName := model
+		if actual, ok := s.ActualModelNames[model]; ok && actual != model {
+			displayName = model + " → " + actual
+		}
 		if ms.Cost > 0 {
-			fmt.Fprintf(w, "    %s: ¥%.6f (%d req, %d in, %d out)\n",
-				model, ms.Cost, ms.Requests, ms.InputTokens+ms.CacheCreation+ms.CacheRead, ms.OutputTokens)
+			fmt.Fprintf(w, "    %s: ¥%.6f (%d 次, %d 输入, %d 输出)\n",
+				displayName, ms.Cost, ms.Requests, ms.InputTokens+ms.CacheCreation+ms.CacheRead, ms.OutputTokens)
 		}
 	}
 }
