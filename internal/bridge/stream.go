@@ -2,12 +2,10 @@ package bridge
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/extensions/codex"
 	"moonbridge/internal/openai"
-	"moonbridge/internal/session"
 )
 
 func (bridge *Bridge) ConvertStreamEvents(events []anthropic.StreamEvent, model string) []openai.StreamEvent {
@@ -18,26 +16,21 @@ type StreamOptions struct {
 	PersistFinalTextReasoning bool
 }
 
-func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEvent, model string, context codex.ConversionContext, sess *session.Session, opts ...StreamOptions) []openai.StreamEvent {
+func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEvent, model string, context codex.ConversionContext, extData map[string]any, opts ...StreamOptions) []openai.StreamEvent {
 	var opt StreamOptions
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
 	converter := streamConverter{
-		bridge:                  bridge,
-		model:                   model,
-		context:                 context,
-		persistTextReasoning:    opt.PersistFinalTextReasoning,
-		contentText:             map[int]string{},
-		toolArguments:           map[int]string{},
-		customToolInputs:        map[int]string{},
-		customToolInitialInputs: map[int]string{},
-		customToolNames:         map[int]string{},
-		webSearchActions:        map[int]*openai.ToolAction{},
-		webSearchInputs:         map[int]string{},
-		itemIDs:                 map[int]string{},
-		outputIndexes:           map[int]int{},
-		extStreamStates:         bridge.plugins.NewStreamStates(model),
+		bridge:               bridge,
+		model:                model,
+		persistTextReasoning: opt.PersistFinalTextReasoning,
+		contentText:          map[int]string{},
+		toolArguments:        map[int]string{},
+		itemIDs:              map[int]string{},
+		outputIndexes:        map[int]int{},
+		extStreamStates:      bridge.hooks.NewStreamStates(model),
+		codexStream:          codex.NewStreamAdapter(context),
 	}
 	var converted []openai.StreamEvent
 	for _, event := range events {
@@ -45,33 +38,25 @@ func (bridge *Bridge) ConvertStreamEventsWithContext(events []anthropic.StreamEv
 	}
 
 	// Let extensions persist stream state back to the session.
-	if sess != nil {
-		bridge.plugins.OnStreamComplete(model, converter.extStreamStates, converter.response.OutputText, sess.ExtensionData)
+	if extData != nil {
+		bridge.hooks.OnStreamComplete(model, converter.extStreamStates, converter.response.OutputText, extData)
 	}
 
 	return converted
 }
 
 type streamConverter struct {
-	bridge                  *Bridge
-	model                   string
-	context                 codex.ConversionContext
-	sequence                int64
-	response                openai.Response
-	contentText             map[int]string
-	toolArguments           map[int]string
-	customToolInputs        map[int]string
-	customToolInitialInputs map[int]string
-	customToolNames         map[int]string
-	webSearchActions        map[int]*openai.ToolAction
-	webSearchInputs         map[int]string
-	pendingReasoningText    string
-	reasoningEmitted        bool
-	persistTextReasoning    bool
-	hasToolCalls            bool
-	itemIDs                 map[int]string
-	outputIndexes           map[int]int
-	extStreamStates         map[string]any
+	bridge               *Bridge
+	model                string
+	sequence             int64
+	response             openai.Response
+	contentText          map[int]string
+	toolArguments        map[int]string
+	persistTextReasoning bool
+	itemIDs              map[int]string
+	outputIndexes        map[int]int
+	extStreamStates      map[string]any
+	codexStream          *codex.StreamAdapter
 }
 
 func (converter *streamConverter) convert(event anthropic.StreamEvent) []openai.StreamEvent {
@@ -136,7 +121,11 @@ func (converter *streamConverter) outputAt(index int) openai.OutputItem {
 }
 
 func (converter *streamConverter) setOutput(index int, item openai.OutputItem) {
-	converter.response.Output[converter.sliceIndex(index)] = item
+	sliceIdx, ok := converter.outputIndexes[index]
+	if !ok || sliceIdx < 0 || sliceIdx >= len(converter.response.Output) {
+		return
+	}
+	converter.response.Output[sliceIdx] = item
 }
 
 func (converter *streamConverter) addOutput(index int, item openai.OutputItem) {
@@ -149,14 +138,10 @@ func (converter *streamConverter) addOutput(index int, item openai.OutputItem) {
 func (converter *streamConverter) resetBlockState(index int) {
 	delete(converter.contentText, index)
 	delete(converter.toolArguments, index)
-	delete(converter.customToolInputs, index)
-	delete(converter.customToolInitialInputs, index)
-	delete(converter.customToolNames, index)
-	delete(converter.webSearchActions, index)
-	delete(converter.webSearchInputs, index)
 	delete(converter.itemIDs, index)
 	delete(converter.outputIndexes, index)
-	converter.bridge.plugins.ResetStreamBlock(converter.model, index, converter.extStreamStates)
+	converter.codexStream.ResetBlock(index)
+	converter.bridge.hooks.ResetStreamBlock(converter.model, index, converter.extStreamStates)
 }
 
 func (converter *streamConverter) hasOutput(index int) bool {
@@ -223,21 +208,12 @@ func (converter *streamConverter) outputItemAt(event string, outputIndex int, it
 }
 
 func (converter *streamConverter) emitPendingReasoningItem() []openai.StreamEvent {
-	if converter.reasoningEmitted || converter.pendingReasoningText == "" {
+	item, ok := converter.codexStream.PendingReasoningItem(len(converter.response.Output))
+	if !ok {
 		return nil
 	}
-	outputIndex := len(converter.response.Output)
-	item := openai.OutputItem{
-		Type: "reasoning",
-		ID:   fmt.Sprintf("rsn_%d", outputIndex),
-		Summary: []openai.ReasoningItemSummary{{
-			Type: "summary_text",
-			Text: converter.pendingReasoningText,
-		}},
-	}
-	converter.reasoningEmitted = true
 	converter.response.Output = append(converter.response.Output, item)
-
+	outputIndex := len(converter.response.Output) - 1
 	return []openai.StreamEvent{
 		converter.outputItemAt("response.output_item.added", outputIndex, item),
 		converter.outputItemAt("response.output_item.done", outputIndex, item),

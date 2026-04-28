@@ -13,14 +13,12 @@ import (
 	"moonbridge/internal/config"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
-	"moonbridge/internal/plugin"
-	"moonbridge/internal/session"
 )
 
 type Bridge struct {
 	cfg      config.Config
 	registry *cache.MemoryRegistry
-	plugins  *plugin.Registry
+	hooks    PluginHooks
 }
 
 type RequestError struct {
@@ -34,35 +32,31 @@ func (err *RequestError) Error() string {
 	return err.Message
 }
 
-func New(cfg config.Config, registry *cache.MemoryRegistry, plugins *plugin.Registry) *Bridge {
+func New(cfg config.Config, registry *cache.MemoryRegistry, hooks PluginHooks) *Bridge {
 	if registry == nil {
 		registry = cache.NewMemoryRegistry()
 	}
-	if plugins == nil {
-		plugins = plugin.NewRegistry(nil)
+	return &Bridge{
+		cfg:      cfg,
+		registry: registry,
+		hooks:    hooks.WithDefaults(),
 	}
-	return &Bridge{cfg: cfg, registry: registry, plugins: plugins}
 }
 
 // RequestOptions carries per-request overrides resolved by the server layer.
 type RequestOptions struct {
-	// WebSearchMode is the resolved web search support for this request's provider.
-	// One of "enabled", "disabled", "injected", or empty (falls back to global config).
-	WebSearchMode string
-	// WebSearchMaxUses overrides the max uses for web_search tool.
+	WebSearchMode    string
 	WebSearchMaxUses int
-	// FirecrawlAPIKey overrides the Firecrawl API key for injected search.
-	FirecrawlAPIKey string
+	FirecrawlAPIKey  string
 }
 
 // ToAnthropic converts an OpenAI Responses request to an Anthropic MessageRequest.
-// Takes an optional session for per-request extension state.
-func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session.Session, opts ...RequestOptions) (anthropic.MessageRequest, cache.CacheCreationPlan, error) {
+func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, extData map[string]any, opts ...RequestOptions) (anthropic.MessageRequest, cache.CacheCreationPlan, error) {
 	var opt RequestOptions
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
-	pluginCtx := bridge.pluginRequestContext(request.Model, sess, request.Reasoning, opt)
+	hookCtx := bridge.hookContext(request.Model, extData, request.Reasoning, opt)
 	log := logger.L().With("model", request.Model)
 	log.Debug("正在将 OpenAI 请求转换为 Anthropic 格式")
 	if request.Model == "" {
@@ -71,7 +65,7 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session
 	}
 
 	conversionContext := bridge.ConversionContext(request)
-	messages, system, err := bridge.convertInput(request.Input, conversionContext, sess, request.Model)
+	messages, system, err := bridge.convertInput(request.Input, conversionContext, extData, request.Model)
 	if err != nil {
 		return anthropic.MessageRequest{}, cache.CacheCreationPlan{}, err
 	}
@@ -81,7 +75,7 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session
 	if bridge.cfg.SystemPrompt != "" {
 		system = append([]anthropic.ContentBlock{{Type: "text", Text: bridge.cfg.SystemPrompt}}, system...)
 	}
-	messages = bridge.plugins.RewriteMessages(pluginCtx, messages)
+	messages = bridge.hooks.RewriteMessages(hookCtx, messages)
 	if len(messages) == 0 {
 		messages = []anthropic.Message{{Role: "user", Content: []anthropic.ContentBlock{{Type: "text", Text: " "}}}}
 	}
@@ -90,7 +84,7 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session
 	if err != nil {
 		return anthropic.MessageRequest{}, cache.CacheCreationPlan{}, err
 	}
-	tools = append(tools, bridge.plugins.InjectTools(pluginCtx)...)
+	tools = append(tools, bridge.hooks.InjectTools(hookCtx)...)
 	toolChoice, err := bridge.convertToolChoice(request.ToolChoice, conversionContext)
 	if err != nil {
 		return anthropic.MessageRequest{}, cache.CacheCreationPlan{}, err
@@ -118,14 +112,14 @@ func (bridge *Bridge) ToAnthropic(request openai.ResponsesRequest, sess *session
 		Metadata:      request.Metadata,
 	}
 
-	bridge.plugins.MutateRequest(pluginCtx, &converted)
+	bridge.hooks.MutateRequest(hookCtx, &converted)
 
 	plan, err := bridge.planCache(request, converted)
 	if err != nil {
 		log.Warn("缓存规划失败", "error", err)
 		return anthropic.MessageRequest{}, cache.CacheCreationPlan{}, err
 	}
-	bridge.injectCacheControl(&converted, plan)
+	cache.InjectCacheControl(&converted, plan)
 	log.Debug("请求已转换", "anthropic_model", converted.Model, "max_tokens", converted.MaxTokens, "messages", len(converted.Messages), "tools", len(converted.Tools), "cache_mode", plan.Mode)
 
 	return converted, plan, nil
@@ -139,41 +133,25 @@ func (bridge *Bridge) FromAnthropicWithContext(response anthropic.MessageRespons
 	return bridge.FromAnthropicWithPlanAndContext(response, model, cache.CacheCreationPlan{}, context, nil)
 }
 
-// UpdateRegistryFromUsage updates the in-memory cache registry from upstream usage signals.
-// This is intended for the streaming path where FromAnthropicWithPlan is not called.
-func (bridge *Bridge) UpdateRegistryFromUsage(plan cache.CacheCreationPlan, signals cache.UsageSignals, inputTokens int) {
-	key := plan.PrefixKey
-	if key == "" {
-		key = plan.LocalKey
-	}
-	if key == "" {
-		return
-	}
-	bridge.registry.UpdateFromUsage(key, signals, inputTokens, parseTTL(plan.TTL))
-	logger.L().Debug("缓存注册表已更新（流式）", "key", key, "input_tokens", inputTokens, "cache_creation", signals.CacheCreationInputTokens, "cache_read", signals.CacheReadInputTokens)
-}
-
 func (bridge *Bridge) FromAnthropicWithPlan(response anthropic.MessageResponse, model string, plan cache.CacheCreationPlan) openai.Response {
 	return bridge.FromAnthropicWithPlanAndContext(response, model, plan, codex.ConversionContext{}, nil)
 }
 
-func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.MessageResponse, model string, plan cache.CacheCreationPlan, context codex.ConversionContext, sess *session.Session) openai.Response {
+func (bridge *Bridge) UpdateRegistryFromUsage(plan cache.CacheCreationPlan, signals cache.UsageSignals, inputTokens int) {
+	cache.UpdateRegistryFromUsage(bridge.registry, plan, signals, inputTokens)
+}
+
+func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.MessageResponse, model string, plan cache.CacheCreationPlan, context codex.ConversionContext, extData map[string]any) openai.Response {
 	log := logger.L().With("model", model)
 	log.Debug("正在将 Anthropic 响应转换为 OpenAI 格式", "provider_id", response.ID, "stop_reason", response.StopReason)
-	registryKey := plan.PrefixKey
-	if registryKey == "" {
-		registryKey = plan.LocalKey
-	}
-	if registryKey != "" {
-		bridge.registry.UpdateFromUsage(registryKey, cache.UsageSignals{
-			InputTokens:              response.Usage.InputTokens,
-			CacheCreationInputTokens: response.Usage.CacheCreationInputTokens,
-			CacheReadInputTokens:     response.Usage.CacheReadInputTokens,
-		}, response.Usage.InputTokens, parseTTL(plan.TTL))
-		log.Debug("缓存注册表已更新", "key", registryKey, "input_tokens", response.Usage.InputTokens, "cache_creation", response.Usage.CacheCreationInputTokens, "cache_read", response.Usage.CacheReadInputTokens)
-	}
-	if sess != nil {
-		bridge.plugins.RememberResponseContent(model, response.Content, sess.ExtensionData)
+	cache.UpdateRegistryFromUsage(bridge.registry, plan, cache.UsageSignals{
+		InputTokens:              response.Usage.InputTokens,
+		CacheCreationInputTokens: response.Usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     response.Usage.CacheReadInputTokens,
+	}, response.Usage.InputTokens)
+	log.Debug("缓存注册表已更新", "plan_mode", plan.Mode)
+	if extData != nil {
+		bridge.hooks.RememberResponseContent(model, response.Content, extData)
 	}
 
 	output := make([]openai.OutputItem, 0, len(response.Content))
@@ -183,8 +161,7 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 	hasToolCalls := false
 
 	for index, block := range response.Content {
-		// Let extensions filter/extract reasoning from content blocks.
-		skip, rt := bridge.plugins.OnResponseContent(model, block)
+		skip, rt := bridge.hooks.OnResponseContent(model, block)
 		thinkingText += rt
 		if skip {
 			continue
@@ -206,24 +183,12 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 				})
 				messageContent = nil
 			}
-			if context.IsCustomTool(block.Name) {
-				log.Debug("custom tool call", "name", block.Name)
+			if item, ok := codex.ConvertToolUseOutput(block, context); ok {
+				output = append(output, item)
 			}
-			item := codex.OutputItemFromToolUse(block, context)
-			output = append(output, item)
 		case "server_tool_use":
-			if block.Name == "web_search" {
-				log.Debug("web search tool call")
-				action := webSearchActionFromRaw(block.Input)
-				if !hasWebSearchActionDetails(action) {
-					continue
-				}
-				output = append(output, openai.OutputItem{
-					Type:   "web_search_call",
-					ID:     webSearchItemID(block.ID),
-					Status: "completed",
-					Action: action,
-				})
+			if item, ok := codex.ConvertServerToolUseOutput(block); ok {
+				output = append(output, item)
 			}
 		}
 	}
@@ -237,7 +202,6 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 		})
 	}
 
-	// Let extensions inject reasoning items into the output.
 	if thinkingText != "" && hasToolCalls {
 		reasoningItem := openai.OutputItem{
 			Type: "reasoning",
@@ -271,7 +235,7 @@ func (bridge *Bridge) FromAnthropicWithPlanAndContext(response anthropic.Message
 		Metadata:          metadata,
 		IncompleteDetails: incomplete,
 	}
-	bridge.plugins.PostProcessResponse(bridge.pluginRequestContext(model, sess, nil, RequestOptions{}), &openAIResponse)
+	bridge.hooks.PostProcessResponse(bridge.hookContext(model, extData, nil, RequestOptions{}), &openAIResponse)
 	log.Info("响应已转换", "output_items", len(openAIResponse.Output), "status", openAIResponse.Status)
 	return openAIResponse
 }
@@ -294,9 +258,18 @@ func (bridge *Bridge) errorResponse(err error, model string) (int, openai.ErrorR
 			Code:    requestError.Code,
 		}}
 	}
+	var cachePlanErr *cache.CachePlanError
+	if errors.As(err, &cachePlanErr) {
+		return cachePlanErr.Status, openai.ErrorResponse{Error: openai.ErrorObject{
+			Message: cachePlanErr.Message,
+			Type:    "invalid_request_error",
+			Param:   cachePlanErr.Param,
+			Code:    cachePlanErr.Code,
+		}}
+	}
 	if providerError, ok := anthropic.IsProviderError(err); ok {
 		msg := providerError.Error()
-		msg = bridge.plugins.TransformError(model, msg)
+		msg = bridge.hooks.TransformError(model, msg)
 		return providerError.OpenAIStatus(), openai.ErrorResponse{Error: openai.ErrorObject{
 			Message: msg,
 			Type:    providerError.OpenAIType(),
@@ -310,29 +283,20 @@ func (bridge *Bridge) errorResponse(err error, model string) (int, openai.ErrorR
 	}}
 }
 
-// ProviderFor returns the provider key that serves the given model alias.
-// Delegates to Config.ProviderFor.
 func (bridge *Bridge) ProviderFor(modelAlias string) string {
 	return bridge.cfg.ProviderFor(modelAlias)
 }
 
-// NewSession creates a session with extension data initialized.
-func (bridge *Bridge) NewSession() *session.Session {
-	sess := session.New()
-	sess.InitExtensions(bridge.plugins.NewSessionData())
-	return sess
+func (bridge *Bridge) NewExtensionData() map[string]any {
+	return bridge.hooks.NewSessionData()
 }
 
-func (bridge *Bridge) pluginRequestContext(model string, sess *session.Session, reasoning map[string]any, opt RequestOptions) *plugin.RequestContext {
-	var sessionData map[string]any
-	if sess != nil {
-		sessionData = sess.ExtensionData
-	}
-	return &plugin.RequestContext{
+func (bridge *Bridge) hookContext(model string, extData map[string]any, reasoning map[string]any, opt RequestOptions) HookContext {
+	return HookContext{
 		ModelAlias:  model,
-		SessionData: sessionData,
+		SessionData: extData,
 		Reasoning:   reasoning,
-		WebSearch: plugin.WebSearchInfo{
+		WebSearch: HookWebSearchInfo{
 			Mode:         opt.WebSearchMode,
 			MaxUses:      opt.WebSearchMaxUses,
 			FirecrawlKey: opt.FirecrawlAPIKey,

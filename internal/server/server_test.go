@@ -21,6 +21,7 @@ import (
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
 	"moonbridge/internal/plugin"
+	"moonbridge/internal/pluginhooks"
 	"moonbridge/internal/provider"
 	"moonbridge/internal/server"
 	"moonbridge/internal/stats"
@@ -87,7 +88,7 @@ func TestResponsesHandlerReturnsOpenAIResponse(t *testing.T) {
 			DefaultMaxTokens: 1024,
 			Routes:           map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "claude-test"}},
 			Cache:            config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		Provider: provider,
 	})
 
@@ -124,7 +125,7 @@ func TestResponsesHandlerWritesTraceFile(t *testing.T) {
 			DefaultMaxTokens: 1024,
 			Routes:           map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "claude-test"}},
 			Cache:            config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		Provider: provider,
 		Tracer:   mbtrace.New(mbtrace.Config{Enabled: true, Root: traceRoot, SessionID: "session-test"}),
 	})
@@ -196,7 +197,7 @@ func TestResponsesHandlerAcceptsCodexResponsesPath(t *testing.T) {
 			DefaultMaxTokens: 1024,
 			Routes:           map[string]config.RouteEntry{"gpt-test": {Provider: "default", Model: "claude-test"}},
 			Cache:            config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		Provider: provider,
 	})
 
@@ -294,7 +295,7 @@ func TestResponsesHandlerRejectsUnsupportedToolType(t *testing.T) {
 		Bridge: bridge.New(config.Config{
 			DefaultMaxTokens: 1024,
 			Cache:            config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		Provider: &fakeProvider{},
 	})
 
@@ -327,7 +328,7 @@ func TestResponsesHandlerStreamsOpenAIEvents(t *testing.T) {
 		Bridge: bridge.New(config.Config{
 			DefaultMaxTokens: 1024,
 			Cache:            config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		Provider: provider,
 	})
 
@@ -375,9 +376,8 @@ func TestResponsesHandlerReusesCodexSessionForDeepSeekThinking(t *testing.T) {
 	plugins := plugin.NewRegistry(nil)
 	plugins.Register(deepseekv4.NewPlugin(cfg.DeepSeekV4ForModel))
 	handler := server.New(server.Config{
-		Bridge:   bridge.New(cfg, cache.NewMemoryRegistry(), plugins),
+		Bridge:   bridge.New(cfg, cache.NewMemoryRegistry(), pluginhooks.PluginHooksFromRegistry(plugins)),
 		Provider: provider,
-		Plugins:  plugins,
 	})
 
 	firstRequest := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-test","input":"inspect","stream":true}`))
@@ -481,7 +481,7 @@ func TestResponsesHandlerPassesOpenAIProtocolThroughWithUpstreamModel(t *testing
 				"image": {Provider: "openai", Model: "gpt-image-1.5"},
 			},
 			Cache: config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		ProviderMgr:      providerMgr,
 		OpenAIHTTPClient: httpClient,
 		Stats:            sessionStats,
@@ -522,7 +522,6 @@ func TestResponsesHandlerPassesOpenAIProtocolThroughWithUpstreamModel(t *testing
 	}
 }
 
-
 func TestOpenAIResponsePassthroughWritesTraceOnSuccess(t *testing.T) {
 	traceRoot := t.TempDir()
 	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -552,7 +551,7 @@ func TestOpenAIResponsePassthroughWritesTraceOnSuccess(t *testing.T) {
 				"gpt-direct": {Provider: "openai", Model: "gpt-upstream"},
 			},
 			Cache: config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		ProviderMgr:      providerMgr,
 		OpenAIHTTPClient: httpClient,
 		Tracer:           mbtrace.New(mbtrace.Config{Enabled: true, Root: traceRoot, SessionID: "session-test"}),
@@ -596,7 +595,6 @@ func TestOpenAIResponsePassthroughWritesTraceOnSuccess(t *testing.T) {
 	}
 }
 
-
 func TestInjectWebSearchToolAppendsWhenMissing(t *testing.T) {
 	tools := server.InjectWebSearchTool(nil)
 	if len(tools) != 1 || tools[0].Type != "web_search" {
@@ -623,7 +621,7 @@ func TestInjectWebSearchToolPreservesExistingTools(t *testing.T) {
 func TestOpenAIResponsePassthroughInjectsWebSearchOnEnabledModel(t *testing.T) {
 	traceRoot := t.TempDir()
 	var upstreamBody struct {
-		Model string       `json:"model"`
+		Model string        `json:"model"`
 		Tools []openai.Tool `json:"tools,omitempty"`
 		Input string        `json:"input"`
 	}
@@ -662,7 +660,7 @@ func TestOpenAIResponsePassthroughInjectsWebSearchOnEnabledModel(t *testing.T) {
 				"gpt-direct": {Provider: "openai", Model: "gpt-upstream"},
 			},
 			Cache: config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		ProviderMgr:      providerMgr,
 		OpenAIHTTPClient: httpClient,
 		Tracer:           mbtrace.New(mbtrace.Config{Enabled: true, Root: traceRoot, SessionID: "session-test"}),
@@ -693,10 +691,9 @@ func TestOpenAIResponsePassthroughInjectsWebSearchOnEnabledModel(t *testing.T) {
 	}
 }
 
-
 func TestOpenAIResponsePassthroughSkipsWebSearchOnDisabledModel(t *testing.T) {
 	var upstreamBody struct {
-		Model string       `json:"model"`
+		Model string        `json:"model"`
 		Tools []openai.Tool `json:"tools,omitempty"`
 		Input string        `json:"input"`
 	}
@@ -735,7 +732,7 @@ func TestOpenAIResponsePassthroughSkipsWebSearchOnDisabledModel(t *testing.T) {
 				"gpt-direct": {Provider: "openai", Model: "gpt-upstream"},
 			},
 			Cache: config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		ProviderMgr:      providerMgr,
 		OpenAIHTTPClient: httpClient,
 	})
@@ -759,7 +756,7 @@ func TestOpenAIResponsePassthroughSkipsWebSearchOnDisabledModel(t *testing.T) {
 
 func TestOpenAIResponsePassthroughDoesNotDuplicateWebSearch(t *testing.T) {
 	var upstreamBody struct {
-		Model string       `json:"model"`
+		Model string        `json:"model"`
 		Tools []openai.Tool `json:"tools,omitempty"`
 	}
 	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -796,7 +793,7 @@ func TestOpenAIResponsePassthroughDoesNotDuplicateWebSearch(t *testing.T) {
 				"gpt-direct": {Provider: "openai", Model: "gpt-upstream"},
 			},
 			Cache: config.CacheConfig{Mode: "off"},
-		}, cache.NewMemoryRegistry(), nil),
+		}, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		ProviderMgr:      providerMgr,
 		OpenAIHTTPClient: httpClient,
 	})
@@ -822,4 +819,3 @@ func TestOpenAIResponsePassthroughDoesNotDuplicateWebSearch(t *testing.T) {
 		t.Fatalf("upstream request tools = %+v, expected exactly 1 web_search, got %d", upstreamBody.Tools, count)
 	}
 }
-

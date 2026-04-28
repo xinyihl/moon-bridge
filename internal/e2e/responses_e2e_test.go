@@ -131,7 +131,7 @@ func newE2EHandler(cfg config.Config) http.Handler {
 func newE2EHandlerWithCache(cfg config.Config, cacheConfig config.CacheConfig) http.Handler {
 	cfg.Cache = cacheConfig
 	return server.New(server.Config{
-		Bridge: bridge.New(cfg, cache.NewMemoryRegistry(), nil),
+		Bridge: bridge.New(cfg, cache.NewMemoryRegistry(), bridge.PluginHooks{}),
 		Provider: anthropic.NewClient(anthropic.ClientConfig{
 			BaseURL:   cfg.ProviderBaseURL,
 			APIKey:    cfg.ProviderAPIKey,

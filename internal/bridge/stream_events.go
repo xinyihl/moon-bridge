@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -17,7 +16,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 		return nil
 	}
 	converter.resetBlockState(index)
-	if converter.bridge.plugins.OnStreamBlockStart(converter.model, index, block, converter.extStreamStates) {
+	if converter.bridge.hooks.OnStreamBlockStart(converter.model, index, block, converter.extStreamStates) {
 		return nil
 	}
 	switch block.Type {
@@ -26,26 +25,21 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 		converter.contentText[index] = ""
 		return nil
 	case "tool_use":
-		converter.hasToolCalls = true
-		events := converter.emitPendingReasoningItem()
-		item := codex.OutputItemForToolUseStart(*block, converter.context)
-		converter.itemIDs[index] = item.ID
-		if item.Type == "custom_tool_call" {
-			converter.customToolInputs[index] = ""
-			converter.customToolNames[index] = block.Name
-			if len(block.Input) > 0 && string(block.Input) != "{}" {
-				converter.customToolInitialInputs[index] = string(block.Input)
-			}
+		result := converter.codexStream.ToolUseStart(index, *block)
+		converter.itemIDs[index] = result.ItemID
+		var events []openai.StreamEvent
+		if result.EmitPendingReasoning {
+			events = converter.emitPendingReasoningItem()
 		}
-		converter.bridge.plugins.OnStreamToolCall(converter.model, block.ID, converter.extStreamStates)
-		converter.addOutput(index, item)
-		return append(events, converter.outputItem("response.output_item.added", index, item))
+		converter.bridge.hooks.OnStreamToolCall(converter.model, block.ID, converter.extStreamStates)
+		converter.addOutput(index, result.Item)
+		return append(events, converter.outputItem("response.output_item.added", index, result.Item))
 	case "server_tool_use":
-		if block.Name != "web_search" {
+		result := converter.codexStream.ServerToolUseStart(index, *block)
+		if !result.Handled {
 			return nil
 		}
-		converter.itemIDs[index] = webSearchItemID(block.ID)
-		converter.webSearchActions[index] = webSearchActionFromRaw(block.Input)
+		converter.itemIDs[index] = result.ItemID
 		return nil
 	}
 	return nil
@@ -53,7 +47,7 @@ func (converter *streamConverter) contentBlockStart(event anthropic.StreamEvent)
 
 func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent) []openai.StreamEvent {
 	index := event.Index
-	if converter.bridge.plugins.OnStreamBlockDelta(converter.model, index, event.Delta, converter.extStreamStates) {
+	if converter.bridge.hooks.OnStreamBlockDelta(converter.model, index, event.Delta, converter.extStreamStates) {
 		return nil
 	}
 	switch event.Delta.Type {
@@ -63,7 +57,7 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 		}
 		current := converter.contentText[index]
 		converter.contentText[index] = current + event.Delta.Text
-		if isEmptyWebSearchPrelude(converter.contentText[index]) {
+		if codex.IsEmptyWebSearchPrelude(converter.contentText[index]) {
 			return nil
 		}
 		delta := event.Delta.Text
@@ -101,15 +95,16 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 		})
 		return events
 	case "input_json_delta":
-		if _, ok := converter.webSearchActions[index]; ok {
-			converter.webSearchInputs[index] += event.Delta.PartialJSON
-			return nil
-		}
-		if _, ok := converter.customToolInputs[index]; ok {
-			converter.customToolInputs[index] += event.Delta.PartialJSON
-			return nil
+		if result := converter.codexStream.InputJSONDelta(index, event.Delta.PartialJSON); result.Handled {
+			if result.SuppressDelta {
+				return nil
+			}
 		}
 		converter.toolArguments[index] += event.Delta.PartialJSON
+		// Guard against orphan delta events without a preceding content_block_start.
+		if !converter.hasOutput(index) || converter.itemIDs[index] == "" {
+			return nil
+		}
 		// local_shell_call items accumulate silently; Codex only expects
 		// the completed item via response.output_item.done.
 		if strings.HasPrefix(converter.itemIDs[index], "lc_") {
@@ -131,12 +126,12 @@ func (converter *streamConverter) contentBlockDelta(event anthropic.StreamEvent)
 
 func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) []openai.StreamEvent {
 	index := event.Index
-	if consumed, reasoningText := converter.bridge.plugins.OnStreamBlockStop(converter.model, index, converter.extStreamStates); consumed {
-		converter.pendingReasoningText = reasoningText
+	if consumed, reasoningText := converter.bridge.hooks.OnStreamBlockStop(converter.model, index, converter.extStreamStates); consumed {
+		converter.codexStream.SetPendingReasoning(reasoningText)
 		return nil
 	}
 	if text, ok := converter.contentText[index]; ok {
-		if isEmptyWebSearchPrelude(text) {
+		if codex.IsEmptyWebSearchPrelude(text) {
 			return nil
 		}
 		var events []openai.StreamEvent
@@ -186,55 +181,34 @@ func (converter *streamConverter) contentBlockStop(event anthropic.StreamEvent) 
 		)
 		return events
 	}
-	if action, ok := converter.webSearchActions[index]; ok {
-		if input := converter.webSearchInputs[index]; input != "" {
-			action = webSearchActionFromRaw(json.RawMessage(compactJSON(input)))
+	if result := converter.codexStream.Stop(index, converter.itemIDs[index], converter.outputAt(index), converter.toolArguments[index]); result.Handled {
+		if result.AddOutput {
+			converter.addOutput(index, result.Item)
+			added := converter.outputItem("response.output_item.added", index, result.Item)
+			result.Item.Status = "completed"
+			converter.setOutput(index, result.Item)
+			return []openai.StreamEvent{added, converter.outputItem("response.output_item.done", index, result.Item)}
 		}
-		if !hasWebSearchActionDetails(action) {
-			return nil
+		if result.SetOutput {
+			converter.setOutput(index, result.Item)
+			events := make([]openai.StreamEvent, 0, 2)
+			if result.CustomToolInputDelta != "" {
+				events = append(events, openai.StreamEvent{
+					Event: "response.custom_tool_call_input.delta",
+					Data: openai.CustomToolCallInputDeltaEvent{
+						Type:           "response.custom_tool_call_input.delta",
+						SequenceNumber: converter.next(),
+						ItemID:         converter.itemIDs[index],
+						CallID:         result.Item.CallID,
+						OutputIndex:    converter.outputIndex(index),
+						Delta:          result.CustomToolInputDelta,
+					},
+				})
+			}
+			events = append(events, converter.outputItem("response.output_item.done", index, result.Item))
+			return events
 		}
-		item := openai.OutputItem{
-			Type:   "web_search_call",
-			ID:     converter.itemIDs[index],
-			Status: "in_progress",
-			Action: action,
-		}
-		converter.addOutput(index, item)
-		added := converter.outputItem("response.output_item.added", index, item)
-		item.Status = "completed"
-		converter.setOutput(index, item)
-		return []openai.StreamEvent{added, converter.outputItem("response.output_item.done", index, item)}
-	}
-	if inputJSON, ok := converter.customToolInputs[index]; ok {
-		if inputJSON == "" {
-			inputJSON = converter.customToolInitialInputs[index]
-		}
-		item := converter.outputAt(index)
-		toolName := converter.customToolNames[index]
-		if toolName == "" {
-			toolName = item.Name
-		}
-		item, input := codex.CompleteCustomToolCall(item, converter.itemIDs[index], toolName, compactJSON(inputJSON), converter.context)
-		if item.CallID == "" {
-			item.CallID = strings.TrimPrefix(converter.itemIDs[index], "ctc_")
-		}
-		converter.setOutput(index, item)
-		events := make([]openai.StreamEvent, 0, 2)
-		if input != "" {
-			events = append(events, openai.StreamEvent{
-				Event: "response.custom_tool_call_input.delta",
-				Data: openai.CustomToolCallInputDeltaEvent{
-					Type:           "response.custom_tool_call_input.delta",
-					SequenceNumber: converter.next(),
-					ItemID:         converter.itemIDs[index],
-					CallID:         item.CallID,
-					OutputIndex:    converter.outputIndex(index),
-					Delta:          input,
-				},
-			})
-		}
-		events = append(events, converter.outputItem("response.output_item.done", index, item))
-		return events
+		return nil
 	}
 	if arguments, ok := converter.toolArguments[index]; ok {
 		if strings.HasPrefix(converter.itemIDs[index], "lc_") {

@@ -19,7 +19,6 @@ import (
 	"moonbridge/internal/extensions/websearchinjected"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
-	"moonbridge/internal/plugin"
 	"moonbridge/internal/provider"
 	"moonbridge/internal/session"
 	"moonbridge/internal/stats"
@@ -41,7 +40,6 @@ type Config struct {
 	TraceErrors      io.Writer
 	Stats            *stats.SessionStats
 	AppConfig        config.Config // full app config for per-provider resolution
-	Plugins          *plugin.Registry
 }
 
 type Server struct {
@@ -56,7 +54,6 @@ type Server struct {
 	sessionsMu  sync.Mutex
 	sessions    map[string]serverSession
 	appConfig   config.Config
-	plugins     *plugin.Registry
 }
 
 type serverSession struct {
@@ -78,7 +75,6 @@ func New(cfg Config) *Server {
 		mux:         http.NewServeMux(),
 		sessions:    map[string]serverSession{},
 		appConfig:   cfg.AppConfig,
-		plugins:     cfg.Plugins,
 	}
 	server.mux.HandleFunc("/v1/responses", server.handleResponses)
 	server.mux.HandleFunc("/responses", server.handleResponses)
@@ -171,7 +167,7 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 	// Resolve per-provider web search mode.
 	reqOpts := server.resolveRequestOptions(responsesRequest.Model, providerKey)
 
-	anthropicRequest, plan, err := server.bridge.ToAnthropic(responsesRequest, sess, reqOpts)
+	anthropicRequest, plan, err := server.bridge.ToAnthropic(responsesRequest, sess.ExtensionData, reqOpts)
 	conversionContext := server.bridge.ConversionContext(responsesRequest)
 	record.AnthropicRequest = anthropicRequest
 	if err != nil {
@@ -221,7 +217,7 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 		return
 	}
 
-	openAIResponse := server.bridge.FromAnthropicWithPlanAndContext(anthropicResponse, responsesRequest.Model, plan, conversionContext, sess)
+	openAIResponse := server.bridge.FromAnthropicWithPlanAndContext(anthropicResponse, responsesRequest.Model, plan, conversionContext, sess.ExtensionData)
 	usage := anthropicResponse.Usage
 	if server.stats != nil {
 		server.stats.Record(responsesRequest.Model, anthropicRequest.Model, stats.Usage{
@@ -280,7 +276,7 @@ func (server *Server) handleStream(writer http.ResponseWriter, request *http.Req
 		events = append(events, event)
 	}
 
-	openAIEvents := server.bridge.ConvertStreamEventsWithContext(events, responsesRequest.Model, context, sess, bridge.StreamOptions{
+	openAIEvents := server.bridge.ConvertStreamEventsWithContext(events, responsesRequest.Model, context, sess.ExtensionData, bridge.StreamOptions{
 		PersistFinalTextReasoning: hasToolHistory(anthropicRequest.Messages),
 	})
 	record.AnthropicStreamEvents = events
@@ -335,7 +331,7 @@ func (server *Server) sessionForRequest(request *http.Request) *session.Session 
 	key := sessionKeyFromRequest(request)
 	if key == "" {
 		sess := session.New()
-		sess.InitExtensions(server.plugins.NewSessionData())
+		sess.InitExtensions(server.bridge.NewExtensionData())
 		return sess
 	}
 
@@ -351,7 +347,7 @@ func (server *Server) sessionForRequest(request *http.Request) *session.Session 
 	}
 
 	sess := session.NewWithID(key)
-	sess.InitExtensions(server.plugins.NewSessionData())
+	sess.InitExtensions(server.bridge.NewExtensionData())
 	server.sessions[key] = serverSession{sess: sess, lastUsed: now}
 	return sess
 }

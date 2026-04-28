@@ -11,6 +11,7 @@ import (
 	deepseekv4 "moonbridge/internal/extensions/deepseek_v4"
 	"moonbridge/internal/openai"
 	"moonbridge/internal/plugin"
+	"moonbridge/internal/pluginhooks"
 )
 
 func TestToAnthropicAcceptsCodexLocalShellTool(t *testing.T) {
@@ -166,7 +167,7 @@ func TestToAnthropicAppendsPluginInjectedTools(t *testing.T) {
 	plugins := plugin.NewRegistry(nil)
 	injector := &bridgeToolInjector{}
 	plugins.Register(injector)
-	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), plugins)
+	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), pluginhooks.PluginHooksFromRegistry(plugins))
 
 	converted, _, err := bridgeUnderTest.ToAnthropic(openai.ResponsesRequest{
 		Model: "gpt-test",
@@ -287,7 +288,7 @@ func TestToAnthropicAppliesDeepSeekV4SamplingQuirksOnlyForRoutedProvider(t *test
 	}
 	plugins := plugin.NewRegistry(nil)
 	plugins.Register(deepseekv4.NewPlugin(cfg.DeepSeekV4ForModel))
-	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), plugins)
+	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), pluginhooks.PluginHooksFromRegistry(plugins))
 	temperature := 0.2
 	topP := 0.9
 	base := openai.ResponsesRequest{
@@ -591,11 +592,10 @@ func TestToAnthropicDefaultsToolChoiceToAuto(t *testing.T) {
 	}
 }
 
-
 // bridgePluginRecorder records which plugin hooks were called and their order.
 type bridgePluginRecorder struct {
 	plugin.BasePlugin
-	called                    []string
+	called                     []string
 	sawApplyPatchBatchInMutate bool
 }
 
@@ -634,7 +634,7 @@ func TestToAnthropicPluginHooksCalledWithCodexCustomTool(t *testing.T) {
 	plugins := plugin.NewRegistry(nil)
 	recorder := &bridgePluginRecorder{}
 	plugins.Register(recorder)
-	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), plugins)
+	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), pluginhooks.PluginHooksFromRegistry(plugins))
 
 	// Send a request with apply_patch custom grammar, verifying MutateRequest
 	// sees the proxy Anthropic tools.
@@ -698,7 +698,7 @@ func TestToAnthropicNamespaceToolsWithPluginInjectedTools(t *testing.T) {
 	plugins := plugin.NewRegistry(nil)
 	injector := &bridgeToolInjector{}
 	plugins.Register(injector)
-	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), plugins)
+	bridgeUnderTest := bridge.New(cfg, cache.NewMemoryRegistry(), pluginhooks.PluginHooksFromRegistry(plugins))
 
 	// Send request with namespace tool + plugin tool
 	converted, _, err := bridgeUnderTest.ToAnthropic(openai.ResponsesRequest{

@@ -3,24 +3,22 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"moonbridge/internal/anthropic"
 	"moonbridge/internal/cache"
 	"moonbridge/internal/extensions/codex"
-	"moonbridge/internal/extensions/websearchinjected"
+	"moonbridge/internal/extensions/websearch"
 	"moonbridge/internal/logger"
 	"moonbridge/internal/openai"
-	"moonbridge/internal/session"
 )
 
-func (bridge *Bridge) convertInput(raw json.RawMessage, context codex.ConversionContext, sess *session.Session, modelAlias string) ([]anthropic.Message, []anthropic.ContentBlock, error) {
+func (bridge *Bridge) convertInput(raw json.RawMessage, context codex.ConversionContext, extData map[string]any, modelAlias string) ([]anthropic.Message, []anthropic.ContentBlock, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil, nil
 	}
-	raw = bridge.plugins.PreprocessInput(modelAlias, raw)
+	raw = bridge.hooks.PreprocessInput(modelAlias, raw)
 	trimmed := strings.TrimSpace(string(raw))
 	if strings.HasPrefix(trimmed, "\"") {
 		var text string
@@ -33,15 +31,9 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context codex.Conversion
 		return nil, nil, invalidRequest("input must be a string or array", "input", "invalid_request_error")
 	}
 
-	var items []inputItem
+	var items []codex.InputItem
 	if err := json.Unmarshal(raw, &items); err != nil {
 		return nil, nil, invalidRequest("input array is invalid", "input", "invalid_request_error")
-	}
-
-	// Get per-session extension data.
-	var extData map[string]any
-	if sess != nil {
-		extData = sess.ExtensionData
 	}
 
 	messages := make([]anthropic.Message, 0, len(items))
@@ -49,9 +41,21 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context codex.Conversion
 	seenToolHistory := false
 	var pendingReasoningSummary []openai.ReasoningItemSummary
 	for _, item := range items {
-		switch {
-		case item.Phase == "commentary":
+		// Let codex package handle Codex-specific input types first.
+		if cx := codex.ConvertInputItem(item, context); cx.Handled {
+			if cx.MarksToolHistory {
+				seenToolHistory = true
+			}
+			if cx.ToolUse != nil {
+				if cx.ConsumesReasoning {
+					messages = bridge.applyReasoningBeforeToolUse(modelAlias, messages, pendingReasoningSummary, cx.ToolUse.ID, extData)
+					pendingReasoningSummary = nil
+				}
+				codex.AppendAssistantBlock(&messages, *cx.ToolUse)
+			}
 			continue
+		}
+		switch {
 		case item.Type == "reasoning":
 			pendingReasoningSummary = item.Summary
 			continue
@@ -60,59 +64,30 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context codex.Conversion
 			messages = bridge.applyReasoningBeforeToolUse(modelAlias, messages, pendingReasoningSummary, firstNonEmpty(item.CallID, item.ID), extData)
 			pendingReasoningSummary = nil
 			toolName := context.AnthropicFunctionToolName(item.Namespace, item.Name)
-			toolInput := toolInputFromArguments(item.Arguments)
-			appendAssistantBlock(&messages, anthropic.ContentBlock{
+			toolInput := codex.ToolInputFromArguments(item.Arguments)
+			codex.AppendAssistantBlock(&messages, anthropic.ContentBlock{
 				Type:  "tool_use",
 				ID:    firstNonEmpty(item.CallID, item.ID),
 				Name:  toolName,
 				Input: toolInput,
-			})
-		case item.Type == "custom_tool_call":
-			seenToolHistory = true
-			messages = bridge.applyReasoningBeforeToolUse(modelAlias, messages, pendingReasoningSummary, firstNonEmpty(item.CallID, item.ID), extData)
-			pendingReasoningSummary = nil
-			toolName := item.Name
-			toolInput := json.RawMessage(item.Arguments)
-			if strings.TrimSpace(item.Arguments) == "" {
-				toolName, toolInput = context.AnthropicToolUseForCustomTool(item.Name, item.Input)
-			} else {
-				toolInput = toolInputFromArguments(item.Arguments)
-			}
-			appendAssistantBlock(&messages, anthropic.ContentBlock{
-				Type:  "tool_use",
-				ID:    firstNonEmpty(item.CallID, item.ID),
-				Name:  toolName,
-				Input: toolInput,
-			})
-		case item.Type == "local_shell_call":
-			seenToolHistory = true
-			messages = bridge.applyReasoningBeforeToolUse(modelAlias, messages, pendingReasoningSummary, firstNonEmpty(item.CallID, item.ID), extData)
-			pendingReasoningSummary = nil
-			appendAssistantBlock(&messages, anthropic.ContentBlock{
-				Type:  "tool_use",
-				ID:    firstNonEmpty(item.CallID, item.ID),
-				Name:  "local_shell",
-				Input: codex.LocalShellInputFromAction(item.Action),
 			})
 		case strings.HasSuffix(item.Type, "_output") || item.Type == "function_call_output":
 			seenToolHistory = true
-			appendToolResultBlock(&messages, anthropic.ContentBlock{
+			codex.AppendToolResultBlock(&messages, anthropic.ContentBlock{
 				Type:      "tool_result",
 				ToolUseID: firstNonEmpty(item.CallID, item.ID),
 				Content:   item.Output,
 			})
 			pendingReasoningSummary = nil
-		case item.Type == "web_search_call":
-			continue
 		case item.Role == "system" || item.Role == "developer":
 			system = append(system, contentBlocksFromRaw(item.Content)...)
 		case item.Role == "assistant":
 			blocks := contentBlocksFromRaw(item.Content)
-			if len(blocks) == 0 || isEmptyWebSearchPreludeBlocks(blocks) {
+			if len(blocks) == 0 || codex.IsEmptyWebSearchPreludeBlocks(blocks) {
 				continue
 			}
 			if len(pendingReasoningSummary) > 0 || seenToolHistory {
-				blocks = bridge.plugins.PrependThinkingToAssistant(modelAlias, blocks, pendingReasoningSummary, extData)
+				blocks = bridge.hooks.PrependThinkingToAssistant(modelAlias, blocks, pendingReasoningSummary, extData)
 				pendingReasoningSummary = nil
 			}
 			messages = append(messages, anthropic.Message{Role: "assistant", Content: blocks})
@@ -136,66 +111,30 @@ func (bridge *Bridge) convertInput(raw json.RawMessage, context codex.Conversion
 func (bridge *Bridge) convertTools(tools []openai.Tool, opt RequestOptions) ([]anthropic.Tool, error) {
 	converted := make([]anthropic.Tool, 0, len(tools))
 	for index, tool := range tools {
+		// Check if this is a Codex-specific type first.
+		if codexTools, handled := codex.ConvertCodexTool(tool); handled {
+			converted = append(converted, codexTools...)
+			continue
+		}
 		switch tool.Type {
 		case "function":
 			converted = append(converted, codex.AnthropicToolFromOpenAIFunction(tool.Name, tool.Description, tool.Parameters))
-		case "local_shell":
-			converted = append(converted, anthropic.Tool{
-				Name:        "local_shell",
-				Description: "Run a local shell command. Use only when you need command output from the user's workspace.",
-				InputSchema: codex.LocalShellSchema(),
-			})
-		case "custom":
-			converted = append(converted, codex.AnthropicCustomToolsFromOpenAI(tool.Name, tool)...)
-		case "namespace":
-			for _, child := range tool.Tools {
-				switch child.Type {
-				case "function":
-					converted = append(converted, codex.AnthropicToolFromOpenAIFunction(
-						codex.NamespacedToolName(tool.Name, child.Name),
-						child.Description,
-						child.Parameters,
-					))
-				case "custom":
-					converted = append(converted, codex.AnthropicCustomToolsFromOpenAI(codex.NamespacedToolName(tool.Name, child.Name), child)...)
-				}
-			}
 		case "web_search", "web_search_preview":
 			wsMode := opt.WebSearchMode
 			if wsMode == "" {
-				// Fall back to global config for backward compatibility.
-				if bridge.cfg.WebSearchInjected() {
-					wsMode = "injected"
-				} else if bridge.cfg.WebSearchEnabled() {
-					wsMode = "enabled"
-				} else {
-					wsMode = "disabled"
-				}
+				wsMode = bridge.defaultWebSearchMode()
 			}
-			if wsMode == "injected" {
-				fcKey := opt.FirecrawlAPIKey
-				if fcKey == "" {
-					fcKey = bridge.cfg.FirecrawlAPIKey
-				}
-				converted = append(converted, websearchinjected.InjectTools(fcKey)...)
-				continue
-			}
-			if wsMode != "enabled" {
-				log := logger.L().With("tool_type", tool.Type)
-				log.Debug("skipping web_search tool because provider support is disabled")
-				continue
-			}
-			maxUses := opt.WebSearchMaxUses
-			if maxUses <= 0 {
-				maxUses = bridge.webSearchMaxUses()
-			}
-			converted = append(converted, anthropic.Tool{
-				Name:    "web_search",
-				Type:    "web_search_20250305",
-				MaxUses: maxUses,
+			wsTools := websearch.Tools(websearch.ToolOptions{
+				Mode:            wsMode,
+				MaxUses:         opt.WebSearchMaxUses,
+				DefaultMaxUses:  bridge.webSearchMaxUses(),
+				FirecrawlAPIKey: firstNonEmpty(opt.FirecrawlAPIKey, bridge.cfg.FirecrawlAPIKey),
 			})
-		case "file_search", "computer_use_preview", "image_generation", "tool_search":
-			continue
+			if len(wsTools) == 0 {
+				logger.L().With("tool_type", tool.Type).Debug("skipping web_search tool because provider support is disabled")
+				continue
+			}
+			converted = append(converted, wsTools...)
 		default:
 			return nil, &RequestError{
 				Status:  http.StatusBadRequest,
@@ -213,6 +152,16 @@ func (bridge *Bridge) webSearchMaxUses() int {
 		return bridge.cfg.WebSearchMaxUses
 	}
 	return 8
+}
+
+func (bridge *Bridge) defaultWebSearchMode() string {
+	if bridge.cfg.WebSearchInjected() {
+		return "injected"
+	}
+	if bridge.cfg.WebSearchEnabled() {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func (bridge *Bridge) ConversionContext(request openai.ResponsesRequest) codex.ConversionContext {
@@ -248,207 +197,41 @@ func (bridge *Bridge) convertToolChoice(raw json.RawMessage, context codex.Conve
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return anthropic.ToolChoice{}, invalidRequest("invalid tool_choice", "tool_choice", "invalid_request_error")
 	}
+	// Try Codex-specific tool_choice mapping (namespace, custom tool names).
+	if mapped, ok := codex.ConvertCodexToolChoice(object, context); ok {
+		return mapped, nil
+	}
 	name := object.Name
 	if name == "" {
 		name = object.Function.Name
 	}
 	if name != "" {
-		if object.Namespace != "" {
-			name = context.AnthropicFunctionToolName(object.Namespace, name)
-		}
-		if mapped := context.AnthropicToolChoiceName(name); mapped != "" {
-			name = mapped
-		}
 		return anthropic.ToolChoice{Type: "tool", Name: name}, nil
 	}
 	return anthropic.ToolChoice{}, invalidRequest("unsupported tool_choice", "tool_choice", "unsupported_parameter")
 }
 
 func (bridge *Bridge) planCache(request openai.ResponsesRequest, converted anthropic.MessageRequest) (cache.CacheCreationPlan, error) {
-	cfg := bridge.cfg.Cache
-	if request.PromptCacheRetention == "24h" && !cfg.AllowRetentionDowngrade {
-		return cache.CacheCreationPlan{}, &RequestError{
-			Status:  http.StatusBadRequest,
-			Message: "prompt_cache_retention 24h is not supported by Anthropic prompt caching",
-			Param:   "prompt_cache_retention",
-			Code:    "unsupported_parameter",
-		}
+	cfg := cache.PlanCacheConfig{
+		Mode:                     bridge.cfg.Cache.Mode,
+		TTL:                      bridge.cfg.Cache.TTL,
+		PromptCaching:            bridge.cfg.Cache.PromptCaching,
+		AutomaticPromptCache:     bridge.cfg.Cache.AutomaticPromptCache,
+		ExplicitCacheBreakpoints: bridge.cfg.Cache.ExplicitCacheBreakpoints,
+		AllowRetentionDowngrade:  bridge.cfg.Cache.AllowRetentionDowngrade,
+		MaxBreakpoints:           bridge.cfg.Cache.MaxBreakpoints,
+		MinCacheTokens:           bridge.cfg.Cache.MinCacheTokens,
+		ExpectedReuse:            bridge.cfg.Cache.ExpectedReuse,
+		MinimumValueScore:        bridge.cfg.Cache.MinimumValueScore,
+		MinBreakpointTokens:      bridge.cfg.Cache.MinBreakpointTokens,
 	}
-
-	ttl := cfg.TTL
-	if request.PromptCacheRetention == "in_memory" {
-		ttl = "5m"
-	}
-	if request.PromptCacheRetention == "24h" && cfg.AllowRetentionDowngrade {
-		ttl = "1h"
-	}
-
-	toolsHash, _ := cache.CanonicalHash(converted.Tools)
-	systemHash, _ := cache.CanonicalHash(converted.System)
-	messagesHash, _ := cache.CanonicalHash(converted.Messages)
-	planner := cache.NewPlannerWithRegistry(cache.PlannerConfig{
-		Mode:                     cfg.Mode,
-		TTL:                      ttl,
-		PromptCaching:            cfg.PromptCaching,
-		AutomaticPromptCache:     cfg.AutomaticPromptCache,
-		ExplicitCacheBreakpoints: cfg.ExplicitCacheBreakpoints,
-		MaxBreakpoints:           cfg.MaxBreakpoints,
-		MinCacheTokens:           cfg.MinCacheTokens,
-		ExpectedReuse:            cfg.ExpectedReuse,
-		MinimumValueScore:        cfg.MinimumValueScore,
-		MinBreakpointTokens:      cfg.MinBreakpointTokens,
-	}, bridge.registry)
-	return planner.Plan(cache.PlanInput{
-		ProviderID:            "anthropic",
-		UpstreamAPIKeyID:      "configured-provider-key",
-		Model:                 converted.Model,
-		PromptCacheKey:        request.PromptCacheKey,
-		ToolsHash:             toolsHash,
-		SystemHash:            systemHash,
-		MessagePrefixHash:     messagesHash,
-		MessageBreakpoints:    cacheMessageBreakpointCandidates(converted.Messages),
-		ToolCount:             len(converted.Tools),
-		SystemBlockCount:      len(converted.System),
-		MessageCount:          len(converted.Messages),
-		EstimatedTokens:       estimateTokens(converted),
-		EstimatedToolTokens:   estimatePartTokens(converted.Tools),
-		EstimatedSystemTokens: estimatePartTokens(converted.System),
-	})
-}
-
-func (bridge *Bridge) injectCacheControl(request *anthropic.MessageRequest, plan cache.CacheCreationPlan) {
-	if plan.Mode == "off" {
-		return
-	}
-	cacheControl := &anthropic.CacheControl{Type: "ephemeral"}
-	if plan.TTL == "1h" {
-		cacheControl.TTL = "1h"
-	}
-	if plan.Mode == "automatic" || plan.Mode == "hybrid" {
-		request.CacheControl = cacheControl
-	}
-	for _, breakpointValue := range plan.Breakpoints {
-		switch breakpointValue.Scope {
-		case "tools":
-			if len(request.Tools) > 0 {
-				index := breakpointValue.ScopeIndex
-				if index < 0 || index >= len(request.Tools) {
-					index = len(request.Tools) - 1
-				}
-				request.Tools[index].CacheControl = cacheControl
-			}
-		case "system":
-			if len(request.System) > 0 {
-				index := breakpointValue.ScopeIndex
-				if index < 0 || index >= len(request.System) {
-					index = len(request.System) - 1
-				}
-				request.System[index].CacheControl = cacheControl
-			}
-		case "messages":
-			if len(request.Messages) > 0 {
-				messageIndex := breakpointValue.ScopeIndex
-				if messageIndex < 0 || messageIndex >= len(request.Messages) {
-					messageIndex = len(request.Messages) - 1
-				}
-				contentIndex := len(request.Messages[messageIndex].Content) - 1
-				if breakpointValue.ContentIndex >= 0 && breakpointValue.ContentIndex < len(request.Messages[messageIndex].Content) {
-					contentIndex = breakpointValue.ContentIndex
-				}
-				if contentIndex >= 0 {
-					request.Messages[messageIndex].Content[contentIndex].CacheControl = cacheControl
-				}
-			}
-		}
-	}
-}
-
-func cacheMessageBreakpointCandidates(messages []anthropic.Message) []cache.MessageBreakpointCandidate {
-	candidates := make([]cache.MessageBreakpointCandidate, 0, len(messages))
-	for messageIndex, message := range messages {
-		contentIndex := lastCacheableContentIndex(message.Content)
-		if contentIndex < 0 {
-			continue
-		}
-		blockPath := fmt.Sprintf("messages[%d].content[%d]", messageIndex, contentIndex)
-		if contentIndex == len(message.Content)-1 {
-			blockPath = fmt.Sprintf("messages[%d].content[last]", messageIndex)
-		}
-		candidates = append(candidates, cache.MessageBreakpointCandidate{
-			MessageIndex: messageIndex,
-			ContentIndex: contentIndex,
-			BlockPath:    blockPath,
-			Role:         message.Role,
-		})
-	}
-	return candidates
-}
-
-func lastCacheableContentIndex(content []anthropic.ContentBlock) int {
-	for index := len(content) - 1; index >= 0; index-- {
-		block := content[index]
-		if block.Type == "text" && strings.TrimSpace(block.Text) == "" {
-			continue
-		}
-		return index
-	}
-	return -1
+	return cache.PlanCache(cfg, bridge.registry, request, converted)
 }
 
 // applyReasoningBeforeToolUse delegates provider-specific reasoning replay to
 // plugins before emitting a tool_use message.
 func (bridge *Bridge) applyReasoningBeforeToolUse(modelAlias string, messages []anthropic.Message, pendingSummary []openai.ReasoningItemSummary, toolCallID string, extData map[string]any) []anthropic.Message {
-	return bridge.plugins.PrependThinkingToMessages(modelAlias, messages, toolCallID, pendingSummary, extData)
-}
-
-type inputItem struct {
-	Type      string                        `json:"type"`
-	ID        string                        `json:"id"`
-	Role      string                        `json:"role"`
-	Phase     string                        `json:"phase"`
-	Content   json.RawMessage               `json:"content"`
-	CallID    string                        `json:"call_id"`
-	Name      string                        `json:"name"`
-	Namespace string                        `json:"namespace"`
-	Arguments string                        `json:"arguments"`
-	Input     string                        `json:"input"`
-	Action    *openai.ToolAction            `json:"action"`
-	Summary   []openai.ReasoningItemSummary `json:"summary,omitempty"`
-	Output    string                        `json:"output"`
-}
-
-// toolInputFromArguments recovers histories poisoned by concatenated tool
-// argument objects and replaces other malformed JSON with a valid sentinel.
-func toolInputFromArguments(arguments string) json.RawMessage {
-	trimmed := strings.TrimSpace(arguments)
-	if trimmed == "" {
-		return json.RawMessage(`{}`)
-	}
-	if json.Valid([]byte(trimmed)) {
-		return json.RawMessage(trimmed)
-	}
-	if recovered, ok := lastConcatenatedJSONValue(trimmed); ok {
-		return recovered
-	}
-	return json.RawMessage(`{"invalid_argument":true}`)
-}
-
-func lastConcatenatedJSONValue(value string) (json.RawMessage, bool) {
-	decoder := json.NewDecoder(strings.NewReader(value))
-	var last json.RawMessage
-	count := 0
-	for {
-		var raw json.RawMessage
-		err := decoder.Decode(&raw)
-		if err == io.EOF {
-			return last, count > 1
-		}
-		if err != nil {
-			return nil, false
-		}
-		last = append(json.RawMessage(nil), raw...)
-		count++
-	}
+	return bridge.hooks.PrependThinkingToMessages(modelAlias, messages, toolCallID, pendingSummary, extData)
 }
 
 func contentBlocksFromRaw(raw json.RawMessage) []anthropic.ContentBlock {
@@ -484,47 +267,6 @@ func contentBlocksFromRaw(raw json.RawMessage) []anthropic.ContentBlock {
 		return nil
 	}
 	return []anthropic.ContentBlock{{Type: "text", Text: trimmed}}
-}
-
-func isEmptyWebSearchPreludeBlocks(blocks []anthropic.ContentBlock) bool {
-	if len(blocks) != 1 || blocks[0].Type != "text" {
-		return false
-	}
-	return isEmptyWebSearchPrelude(blocks[0].Text)
-}
-
-func isEmptyWebSearchPrelude(text string) bool {
-	return strings.TrimSpace(text) == "Search results for query:"
-}
-
-func appendAssistantBlock(messages *[]anthropic.Message, block anthropic.ContentBlock) {
-	lastIndex := len(*messages) - 1
-	if lastIndex >= 0 && (*messages)[lastIndex].Role == "assistant" {
-		(*messages)[lastIndex].Content = append((*messages)[lastIndex].Content, block)
-		return
-	}
-	*messages = append(*messages, anthropic.Message{Role: "assistant", Content: []anthropic.ContentBlock{block}})
-}
-
-func appendToolResultBlock(messages *[]anthropic.Message, block anthropic.ContentBlock) {
-	lastIndex := len(*messages) - 1
-	if lastIndex >= 0 && (*messages)[lastIndex].Role == "user" && allContentBlocksHaveType((*messages)[lastIndex].Content, "tool_result") {
-		(*messages)[lastIndex].Content = append((*messages)[lastIndex].Content, block)
-		return
-	}
-	*messages = append(*messages, anthropic.Message{Role: "user", Content: []anthropic.ContentBlock{block}})
-}
-
-func allContentBlocksHaveType(blocks []anthropic.ContentBlock, blockType string) bool {
-	if len(blocks) == 0 {
-		return false
-	}
-	for _, block := range blocks {
-		if block.Type != blockType {
-			return false
-		}
-	}
-	return true
 }
 
 func parseStopSequences(raw json.RawMessage) []string {

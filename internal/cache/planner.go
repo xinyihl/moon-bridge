@@ -53,13 +53,6 @@ type PlanInput struct {
 	EstimatedSystemTokens int // estimated tokens for system blocks
 }
 
-type MessageBreakpointCandidate struct {
-	MessageIndex int
-	ContentIndex int
-	BlockPath    string
-	Hash         string
-	Role         string
-}
 
 type CacheCreationPlan struct {
 	Mode        string

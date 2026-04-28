@@ -608,8 +608,8 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 		{Type: "message_delta", Delta: anthropic.StreamDelta{StopReason: "tool_use"}},
 	}
 
-	sess := bridgeUnderTest.NewSession()
-	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", codex.ConversionContext{}, sess)
+	extData := bridgeUnderTest.NewExtensionData()
+	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", codex.ConversionContext{}, extData)
 	completed := streamLifecycleResponse(t, convertedEvents, "response.completed")
 	// Reasoning item should be emitted alongside the tool call.
 	if len(completed.Output) != 2 {
@@ -640,7 +640,7 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 			{"call_id":"call_ls","output":"README.md\n","type":"function_call_output"}
 		]`),
 	}
-	converted, _, err := bridgeUnderTest.ToAnthropic(followup, sess)
+	converted, _, err := bridgeUnderTest.ToAnthropic(followup, extData)
 	if err != nil {
 		t.Fatalf("ToAnthropic(, nil) error = %v", err)
 	}
@@ -666,7 +666,7 @@ func TestDeepSeekThinkingIsStatefullyInjectedOnlyForToolCalls(t *testing.T) {
 			{"call_id":"call_pwd","output":"/repo\n","type":"function_call_output"}
 		]`),
 	}
-	convertedMissing, _, err := bridgeUnderTest.ToAnthropic(missingCacheFollowup, sess)
+	convertedMissing, _, err := bridgeUnderTest.ToAnthropic(missingCacheFollowup, extData)
 	if err != nil {
 		t.Fatalf("ToAnthropic(, nil) missing cache error = %v", err)
 	}
@@ -698,8 +698,8 @@ func TestDeepSeekSignatureOnlyThinkingIsReinjectedForToolCalls(t *testing.T) {
 		{Type: "message_stop"},
 	}
 
-	sess := bridgeUnderTest.NewSession()
-	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", codex.ConversionContext{}, sess)
+	extData := bridgeUnderTest.NewExtensionData()
+	convertedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", codex.ConversionContext{}, extData)
 
 	completed := streamLifecycleResponse(t, convertedEvents, "response.completed")
 	if len(completed.Output) != 2 || completed.Output[0].Type != "reasoning" || completed.Output[1].Type != "function_call" {
@@ -763,13 +763,13 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 		{Type: "message_stop"},
 	}
 
-	sess := bridgeUnderTest.NewSession()
-	nonPersistedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", codex.ConversionContext{}, sess)
+	extData := bridgeUnderTest.NewExtensionData()
+	nonPersistedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", codex.ConversionContext{}, extData)
 	nonPersistedCompleted := streamLifecycleResponse(t, nonPersistedEvents, "response.completed")
 	if len(nonPersistedCompleted.Output) != 1 || nonPersistedCompleted.Output[0].Type != "message" {
 		t.Fatalf("non-persisted completed output = %+v", nonPersistedCompleted.Output)
 	}
-	persistedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", codex.ConversionContext{}, bridgeUnderTest.NewSession(), bridge.StreamOptions{
+	persistedEvents := bridgeUnderTest.ConvertStreamEventsWithContext(events, "gpt-test", codex.ConversionContext{}, nil, bridge.StreamOptions{
 		PersistFinalTextReasoning: true,
 	})
 	persistedCompleted := streamLifecycleResponse(t, persistedEvents, "response.completed")
@@ -811,7 +811,7 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 			{"role":"user","content":[{"type":"input_text","text":"update docs"}],"type":"message"}
 		]`),
 	}
-	converted, _, err := bridgeUnderTest.ToAnthropic(followup, sess)
+	converted, _, err := bridgeUnderTest.ToAnthropic(followup, extData)
 	if err != nil {
 		t.Fatalf("ToAnthropic() error = %v", err)
 	}
@@ -834,7 +834,7 @@ func TestDeepSeekThinkingIsInjectedForToolChainFinalAssistantText(t *testing.T) 
 			{"role":"user","content":[{"type":"input_text","text":"continue"}],"type":"message"}
 		]`),
 	}
-	convertedNoTool, _, err := bridgeUnderTest.ToAnthropic(noToolHistory, sess)
+	convertedNoTool, _, err := bridgeUnderTest.ToAnthropic(noToolHistory, extData)
 	if err != nil {
 		t.Fatalf("ToAnthropic() no tool history error = %v", err)
 	}
