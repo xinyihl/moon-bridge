@@ -5,124 +5,125 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type FileConfig struct {
-	Mode          string              `yaml:"mode"`
-	TraceRequests bool                `yaml:"trace_requests"`
-	Log           LogFileConfig       `yaml:"log"`
-	Server        ServerFileConfig    `yaml:"server"`
-	Provider      ProviderFileConfig  `yaml:"provider"`
-	Cache         CacheFileConfig     `yaml:"cache"`
-	SystemPrompt  string              `yaml:"system_prompt"`
-	Developer     DeveloperFileConfig `yaml:"developer"`
-	Plugins map[string]any `yaml:"plugins"`
+	Mode          string              `yaml:"mode" json:"mode"`
+	TraceRequests bool                `yaml:"trace_requests" json:"trace_requests,omitempty"`
+	Log           LogFileConfig       `yaml:"log" json:"log,omitempty"`
+	Server        ServerFileConfig    `yaml:"server" json:"server,omitempty"`
+	Provider      ProviderFileConfig  `yaml:"provider" json:"provider,omitempty"`
+	Cache         CacheFileConfig     `yaml:"cache" json:"cache,omitempty"`
+	SystemPrompt  string              `yaml:"system_prompt" json:"system_prompt,omitempty"`
+	Developer     DeveloperFileConfig `yaml:"developer" json:"developer,omitempty"`
+	Plugins       map[string]any      `yaml:"plugins" json:"plugins,omitempty"`
 }
 
 type ServerFileConfig struct {
-	Addr string `yaml:"addr"`
+	Addr string `yaml:"addr" json:"addr,omitempty"`
 }
 
 type ProviderFileConfig struct {
-	BaseURL          string                           `yaml:"base_url"`
-	APIKey           string                           `yaml:"api_key"`
-	Version          string                           `yaml:"version"`
-	UserAgent        string                           `yaml:"user_agent"`
-	WebSearch        WebSearchFileConfig              `yaml:"web_search"`
-	DefaultMaxTokens int                              `yaml:"default_max_tokens"`
-	DefaultModel     string                           `yaml:"default_model"`
-	Providers        map[string]ProviderDefFileConfig `yaml:"providers"`
-	Routes           map[string]string                `yaml:"routes"`
+	BaseURL          string                           `yaml:"base_url" json:"base_url,omitempty"`
+	APIKey           string                           `yaml:"api_key" json:"api_key,omitempty"`
+	Version          string                           `yaml:"version" json:"version,omitempty"`
+	UserAgent        string                           `yaml:"user_agent" json:"user_agent,omitempty"`
+	WebSearch        WebSearchFileConfig              `yaml:"web_search" json:"web_search,omitempty"`
+	DefaultMaxTokens int                              `yaml:"default_max_tokens" json:"default_max_tokens,omitempty"`
+	DefaultModel     string                           `yaml:"default_model" json:"default_model,omitempty"`
+	Providers        map[string]ProviderDefFileConfig `yaml:"providers" json:"providers,omitempty"`
+	Routes           map[string]string                `yaml:"routes" json:"routes,omitempty"`
 }
 
 type CacheFileConfig struct {
-	Mode                     string `yaml:"mode"`
-	TTL                      string `yaml:"ttl"`
-	PromptCaching            *bool  `yaml:"prompt_caching"`
-	AutomaticPromptCache     *bool  `yaml:"automatic_prompt_cache"`
-	ExplicitCacheBreakpoints *bool  `yaml:"explicit_cache_breakpoints"`
-	AllowRetentionDowngrade  *bool  `yaml:"allow_retention_downgrade"`
-	MaxBreakpoints           int    `yaml:"max_breakpoints"`
-	MinCacheTokens           int    `yaml:"min_cache_tokens"`
-	ExpectedReuse            int    `yaml:"expected_reuse"`
-	MinimumValueScore        int    `yaml:"minimum_value_score"`
-	MinBreakpointTokens      int    `yaml:"min_breakpoint_tokens"`
+	Mode                     string `yaml:"mode" json:"mode,omitempty"`
+	TTL                      string `yaml:"ttl" json:"ttl,omitempty"`
+	PromptCaching            *bool  `yaml:"prompt_caching" json:"prompt_caching,omitempty"`
+	AutomaticPromptCache     *bool  `yaml:"automatic_prompt_cache" json:"automatic_prompt_cache,omitempty"`
+	ExplicitCacheBreakpoints *bool  `yaml:"explicit_cache_breakpoints" json:"explicit_cache_breakpoints,omitempty"`
+	AllowRetentionDowngrade  *bool  `yaml:"allow_retention_downgrade" json:"allow_retention_downgrade,omitempty"`
+	MaxBreakpoints           int    `yaml:"max_breakpoints" json:"max_breakpoints,omitempty"`
+	MinCacheTokens           int    `yaml:"min_cache_tokens" json:"min_cache_tokens,omitempty"`
+	ExpectedReuse            int    `yaml:"expected_reuse" json:"expected_reuse,omitempty"`
+	MinimumValueScore        int    `yaml:"minimum_value_score" json:"minimum_value_score,omitempty"`
+	MinBreakpointTokens      int    `yaml:"min_breakpoint_tokens" json:"min_breakpoint_tokens,omitempty"`
 }
 
 // ProviderModelFileConfig defines metadata for a model in a provider's catalog.
 // The map key is the upstream model name.
 type ProviderModelFileConfig struct {
-	ContextWindow   int                    `yaml:"context_window"`
-	MaxOutputTokens int                    `yaml:"max_output_tokens"`
-	Pricing         ModelPricingFileConfig `yaml:"pricing"`
+	ContextWindow   int                    `yaml:"context_window" json:"context_window,omitempty"`
+	MaxOutputTokens int                    `yaml:"max_output_tokens" json:"max_output_tokens,omitempty"`
+	Pricing         ModelPricingFileConfig `yaml:"pricing" json:"pricing,omitempty"`
 	// Codex model catalog metadata (injected into /v1/models responses).
-	DisplayName                string                           `yaml:"display_name"`
-	Description                string                           `yaml:"description"`
-	DefaultReasoningLevel      string                           `yaml:"default_reasoning_level"`
-	SupportedReasoningLevels   []ReasoningLevelPresetFileConfig `yaml:"supported_reasoning_levels"`
-	SupportsReasoningSummaries *bool                            `yaml:"supports_reasoning_summaries"`
-	DefaultReasoningSummary    string                           `yaml:"default_reasoning_summary"`
-	WebSearch                  WebSearchFileConfig              `yaml:"web_search"`
-	DeepSeekV4                 bool                             `yaml:"deepseek_v4"`
+	DisplayName                string                           `yaml:"display_name" json:"display_name,omitempty"`
+	Description                string                           `yaml:"description" json:"description,omitempty"`
+	DefaultReasoningLevel      string                           `yaml:"default_reasoning_level" json:"default_reasoning_level,omitempty"`
+	SupportedReasoningLevels   []ReasoningLevelPresetFileConfig `yaml:"supported_reasoning_levels" json:"supported_reasoning_levels,omitempty"`
+	SupportsReasoningSummaries *bool                            `yaml:"supports_reasoning_summaries" json:"supports_reasoning_summaries,omitempty"`
+	DefaultReasoningSummary    string                           `yaml:"default_reasoning_summary" json:"default_reasoning_summary,omitempty"`
+	WebSearch                  WebSearchFileConfig              `yaml:"web_search" json:"web_search,omitempty"`
+	DeepSeekV4                 bool                             `yaml:"deepseek_v4" json:"deepseek_v4,omitempty"`
 }
 
 type ProviderDefFileConfig struct {
-	BaseURL   string                             `yaml:"base_url"`
-	APIKey    string                             `yaml:"api_key"`
-	Version   string                             `yaml:"version"`
-	UserAgent string                             `yaml:"user_agent"`
-	Protocol  string                             `yaml:"protocol"`
-	WebSearch WebSearchFileConfig                `yaml:"web_search"`
-	Models    map[string]ProviderModelFileConfig `yaml:"models"`
+	BaseURL   string                             `yaml:"base_url" json:"base_url"`
+	APIKey    string                             `yaml:"api_key" json:"api_key"`
+	Version   string                             `yaml:"version" json:"version,omitempty"`
+	UserAgent string                             `yaml:"user_agent" json:"user_agent,omitempty"`
+	Protocol  string                             `yaml:"protocol" json:"protocol,omitempty"`
+	WebSearch WebSearchFileConfig                `yaml:"web_search" json:"web_search,omitempty"`
+	Models    map[string]ProviderModelFileConfig `yaml:"models" json:"models,omitempty"`
 }
 
 type ModelPricingFileConfig struct {
-	InputPrice      float64 `yaml:"input_price"`
-	OutputPrice     float64 `yaml:"output_price"`
-	CacheWritePrice float64 `yaml:"cache_write_price"`
-	CacheReadPrice  float64 `yaml:"cache_read_price"`
+	InputPrice      float64 `yaml:"input_price" json:"input_price,omitempty"`
+	OutputPrice     float64 `yaml:"output_price" json:"output_price,omitempty"`
+	CacheWritePrice float64 `yaml:"cache_write_price" json:"cache_write_price,omitempty"`
+	CacheReadPrice  float64 `yaml:"cache_read_price" json:"cache_read_price,omitempty"`
 }
 
 // ReasoningLevelPresetFileConfig maps to Codex's ReasoningEffortPreset.
 type ReasoningLevelPresetFileConfig struct {
-	Effort      string `yaml:"effort"`
-	Description string `yaml:"description"`
+	Effort      string `yaml:"effort" json:"effort,omitempty"`
+	Description string `yaml:"description" json:"description,omitempty"`
 }
 
 type WebSearchFileConfig struct {
-	Support         string `yaml:"support"`
-	MaxUses         int    `yaml:"max_uses"`
-	TavilyAPIKey    string `yaml:"tavily_api_key"`
-	FirecrawlAPIKey string `yaml:"firecrawl_api_key"`
-	SearchMaxRounds int    `yaml:"search_max_rounds"`
+	Support         string `yaml:"support" json:"support,omitempty"`
+	MaxUses         int    `yaml:"max_uses" json:"max_uses,omitempty"`
+	TavilyAPIKey    string `yaml:"tavily_api_key" json:"tavily_api_key,omitempty"`
+	FirecrawlAPIKey string `yaml:"firecrawl_api_key" json:"firecrawl_api_key,omitempty"`
+	SearchMaxRounds int    `yaml:"search_max_rounds" json:"search_max_rounds,omitempty"`
 }
 
 type DeveloperFileConfig struct {
-	Proxy DeveloperProxyFileConfig `yaml:"proxy"`
+	Proxy DeveloperProxyFileConfig `yaml:"proxy" json:"proxy,omitempty"`
 }
 
 type DeveloperProxyFileConfig struct {
-	Response  ProxyFileConfig `yaml:"response"`
-	Anthropic ProxyFileConfig `yaml:"anthropic"`
+	Response  ProxyFileConfig `yaml:"response" json:"response,omitempty"`
+	Anthropic ProxyFileConfig `yaml:"anthropic" json:"anthropic,omitempty"`
 }
 
 type ProxyFileConfig struct {
-	Model    string                  `yaml:"model"`
-	Provider ProxyProviderFileConfig `yaml:"provider"`
+	Model    string                  `yaml:"model" json:"model,omitempty"`
+	Provider ProxyProviderFileConfig `yaml:"provider" json:"provider,omitempty"`
 }
 
 type ProxyProviderFileConfig struct {
-	BaseURL string `yaml:"base_url"`
-	APIKey  string `yaml:"api_key"`
-	Version string `yaml:"version"`
+	BaseURL string `yaml:"base_url" json:"base_url,omitempty"`
+	APIKey  string `yaml:"api_key" json:"api_key,omitempty"`
+	Version string `yaml:"version" json:"version,omitempty"`
 }
 
 type LogFileConfig struct {
-	Level  string `yaml:"level"`
-	Format string `yaml:"format"`
+	Level  string `yaml:"level" json:"level,omitempty"`
+	Format string `yaml:"format" json:"format,omitempty"`
 }
 
 func LoadFromFile(path string) (Config, error) {
@@ -130,17 +131,135 @@ func LoadFromFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config %s: %w", path, err)
 	}
-	return LoadFromYAML(data)
+	fileConfig, err := decodeFileConfig(data)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := loadPluginConfigFiles(path, &fileConfig); err != nil {
+		return Config{}, err
+	}
+	cfg, err := FromFileConfig(fileConfig)
+	if err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
+// LoadFromYAML parses YAML bytes into a Config. Unlike LoadFromFile, it does
+// not discover split plugin config files from the plugins/ directory; it only
+// processes the inline plugins: section of the provided YAML content.
 func LoadFromYAML(data []byte) (Config, error) {
+	fileConfig, err := decodeFileConfig(data)
+	if err != nil {
+		return Config{}, err
+	}
+	return FromFileConfig(fileConfig)
+}
+
+func decodeFileConfig(data []byte) (FileConfig, error) {
 	var fileConfig FileConfig
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&fileConfig); err != nil {
-		return Config{}, err
+		return FileConfig{}, err
 	}
-	return FromFileConfig(fileConfig)
+	return fileConfig, nil
+}
+
+func ResolveConfigPath(explicitPath string) (string, error) {
+	if path := strings.TrimSpace(explicitPath); path != "" {
+		return path, nil
+	}
+	return XDGDefaultConfigPath()
+}
+
+func XDGDefaultConfigPath() (string, error) {
+	base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
+	if base == "" {
+		home := strings.TrimSpace(os.Getenv("HOME"))
+		if home == "" {
+			return "", errors.New("HOME is not set and XDG_CONFIG_HOME is empty")
+		}
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, AppConfigDirName, DefaultConfigFileName), nil
+}
+
+func loadPluginConfigFiles(configPath string, fileConfig *FileConfig) error {
+	pluginDir := filepath.Join(filepath.Dir(configPath), DefaultPluginConfigDirName)
+	entries, err := os.ReadDir(pluginDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read plugin config dir %s: %w", pluginDir, err)
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !isYAMLFile(entry.Name()) {
+			continue
+		}
+		baseName := strings.TrimSuffix(strings.TrimSuffix(entry.Name(), ".yaml"), ".yml")
+		if strings.TrimSpace(baseName) == "" {
+			continue
+		}
+		// Deduplicate: skip if we already processed a .yml variant of this base name.
+		if seen[baseName] {
+			continue
+		}
+		seen[baseName] = true
+		pluginPath := filepath.Join(pluginDir, entry.Name())
+		raw, err := os.ReadFile(pluginPath)
+		if err != nil {
+			return fmt.Errorf("read plugin config %s: %w", pluginPath, err)
+		}
+		pluginConfig, err := decodePluginConfig(raw)
+		if err != nil {
+			return fmt.Errorf("parse plugin config %s: %w", pluginPath, err)
+		}
+		// Skip empty or whitespace-only plugin files.
+		if len(pluginConfig) == 0 {
+			continue
+		}
+		mergePluginConfig(fileConfig, baseName, pluginConfig)
+	}
+	return nil
+}
+
+func mergePluginConfig(fileConfig *FileConfig, pluginName string, pluginConfig map[string]any) {
+	if fileConfig.Plugins == nil {
+		fileConfig.Plugins = make(map[string]any)
+	}
+	if existing, ok := fileConfig.Plugins[pluginName].(map[string]any); ok {
+		merged := make(map[string]any, len(existing)+len(pluginConfig))
+		for key, value := range existing {
+			merged[key] = value
+		}
+		for key, value := range pluginConfig {
+			merged[key] = value
+		}
+		fileConfig.Plugins[pluginName] = merged
+		return
+	}
+	fileConfig.Plugins[pluginName] = pluginConfig
+}
+
+func decodePluginConfig(data []byte) (map[string]any, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return map[string]any{}, nil
+	}
+	var pluginConfig map[string]any
+	if err := yaml.Unmarshal(data, &pluginConfig); err != nil {
+		return nil, err
+	}
+	if pluginConfig == nil {
+		return map[string]any{}, nil
+	}
+	return pluginConfig, nil
+}
+
+func isYAMLFile(name string) bool {
+	return strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml")
 }
 
 func FromFileConfig(fileConfig FileConfig) (Config, error) {

@@ -31,13 +31,31 @@ type Plugin interface {
 
 // PluginContext is passed to Plugin.Init.
 type PluginContext struct {
-	Config    map[string]any // plugin-specific config from config.yml plugins.<name>
-	AppConfig config.Config  // read-only global config
-	Logger    *slog.Logger   // logger prefixed with the plugin name
+	// Config is the decoded typed config struct for the plugin, or nil if
+	// the plugin has not registered a config type. Populated by Registry.InitAll.
+	// use PluginConfig to retrieve a typed struct
+	Config    any
+	AppConfig config.Config // read-only global config
+	Logger    *slog.Logger  // logger prefixed with the plugin name
+}
+
+// ConfigTypeProvider is an optional interface plugins may implement to
+// declare their config structure for schema generation and runtime decoding.
+// ConfigType returns a pointer to a zero-valued config struct (e.g. &Config{}).
+type ConfigTypeProvider interface {
+	ConfigType() any
 }
 
 // BasePlugin provides no-op defaults for the Plugin interface.
 type BasePlugin struct{}
+
+// Config returns the decoded typed config from PluginContext.
+// Returns nil when the plugin has no registered config type or the type
+// does not match.
+func Config[T any](ctx PluginContext) *T {
+	t, _ := ctx.Config.(*T)
+	return t
+}
 
 func (BasePlugin) Init(PluginContext) error    { return nil }
 func (BasePlugin) Shutdown() error             { return nil }

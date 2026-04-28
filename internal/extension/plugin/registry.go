@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"moonbridge/internal/foundation/config"
 	"moonbridge/internal/foundation/logger"
 	"moonbridge/internal/foundation/openai"
 	"moonbridge/internal/protocol/anthropic"
@@ -40,6 +41,9 @@ func NewRegistry(logger *slog.Logger) *Registry {
 // Register adds a plugin and detects its capabilities.
 func (r *Registry) Register(p Plugin) {
 	r.plugins = append(r.plugins, p)
+	if ctp, ok := p.(ConfigTypeProvider); ok {
+		config.RegisterPluginConfigType(p.Name(), ctp.ConfigType)
+	}
 	if v, ok := p.(InputPreprocessor); ok {
 		r.inputPreprocessors = append(r.inputPreprocessors, v)
 	}
@@ -88,7 +92,7 @@ func (r *Registry) InitAll(appCfg interface {
 			pluginCfg = appCfg.PluginConfig(p.Name())
 		}
 		ctx := PluginContext{
-			Config: pluginCfg,
+			Config: config.DecodePluginConfig(p.Name(), pluginCfg),
 			Logger: r.logger.With("plugin", p.Name()),
 		}
 		if err := p.Init(ctx); err != nil {
