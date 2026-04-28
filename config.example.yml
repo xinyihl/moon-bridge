@@ -74,6 +74,14 @@ provider:
   default_max_tokens: 65536
   default_model: "moonbridge"
 
+# Plugin-specific configuration.
+# plugins:
+#   deepseek_v4:
+#     # Injects a reminder before user input to reinforce system prompt adherence.
+#     reinforce_instructions: true
+#     # Custom prompt text (default used if omitted). Set to empty string to disable.
+#     reinforce_prompt: "[System Reminder]: Please pay close attention to the system instructions, AGENTS.md files, and any other context provided. Follow them carefully and completely in your response.\n[User]:"
+
 cache:
   mode: "explicit"  # off / automatic / explicit / hybrid
   ttl: "5m"         # 5m / 1h

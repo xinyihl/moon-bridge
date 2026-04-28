@@ -10,6 +10,13 @@ import (
 	"moonbridge/internal/protocol/anthropic"
 )
 
+const (
+	// DefaultReinforcePrompt is the default prompt injected before user input
+	// to reinforce system prompt and AGENTS.md adherence for models that
+	// may occasionally ignore them.
+	DefaultReinforcePrompt = "[System Reminder]: Please pay close attention to the system instructions, AGENTS.md files, and any other context provided. Follow them carefully and completely in your response.\n[User]:"
+)
+
 const PluginName = "deepseek_v4"
 
 // EnabledFunc determines if the plugin is active for a model.
@@ -18,8 +25,10 @@ type EnabledFunc func(modelAlias string) bool
 // DSPlugin implements the new plugin.Plugin interface plus relevant capabilities.
 type DSPlugin struct {
 	plugin.BasePlugin
-	isEnabled EnabledFunc
-	logger    *slog.Logger
+	isEnabled          EnabledFunc
+	logger             *slog.Logger
+	reinforceEnabled   bool
+	reinforcePrompt    string
 }
 
 // NewPlugin creates a DeepSeek V4 plugin.
@@ -31,6 +40,17 @@ func (p *DSPlugin) Name() string                      { return PluginName }
 func (p *DSPlugin) EnabledForModel(model string) bool { return p.isEnabled(model) }
 func (p *DSPlugin) Init(ctx plugin.PluginContext) error {
 	p.logger = ctx.Logger
+	// Read reinforcement config.
+	if cfg, ok := ctx.Config["reinforce_instructions"]; ok {
+		if enabled, ok := cfg.(bool); ok {
+			p.reinforceEnabled = enabled
+		}
+	}
+	if prompt, ok := ctx.Config["reinforce_prompt"].(string); ok && prompt != "" {
+		p.reinforcePrompt = prompt
+	} else {
+		p.reinforcePrompt = DefaultReinforcePrompt
+	}
 	return nil
 }
 
@@ -53,7 +73,39 @@ func (p *DSPlugin) MutateRequest(ctx *plugin.RequestContext, req *anthropic.Mess
 // --- MessageRewriter ---
 
 func (p *DSPlugin) RewriteMessages(ctx *plugin.RequestContext, messages []anthropic.Message) []anthropic.Message {
+	if !p.reinforceEnabled || p.reinforcePrompt == "" {
+		return messages
+	}
+	// Inject a reinforcement message before the last real user message.
+	// Skip tool_result messages (they have Role="user" but are tool responses).
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" && !isToolResultMessage(messages[i]) {
+			reinforcement := anthropic.Message{
+				Role: "user",
+				Content: []anthropic.ContentBlock{{
+					Type: "text",
+					Text: p.reinforcePrompt,
+				}},
+			}
+			// Insert before position i.
+			messages = append(messages[:i], append([]anthropic.Message{reinforcement}, messages[i:]...)...)
+			break
+		}
+	}
 	return messages
+}
+
+// isToolResultMessage checks if a user message contains only tool_result blocks.
+func isToolResultMessage(msg anthropic.Message) bool {
+	if len(msg.Content) == 0 {
+		return false
+	}
+	for _, block := range msg.Content {
+		if block.Type != "tool_result" {
+			return false
+		}
+	}
+	return true
 }
 
 // --- ThinkingPrepender ---

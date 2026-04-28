@@ -203,7 +203,7 @@ func (r *Registry) Register(p Plugin) {
 ## 迁移路径
 
 ### Phase 1: 定义新接口（不破坏现有代码）
-- 新建 `internal/plugin/` 包
+- 新建 `internal/extension/plugin/` 包
 - 定义 `Plugin` + 所有能力接口
 - 定义 `Registry` 新实现
 - 定义 `PluginContext`, `RequestContext`, `StreamContext`

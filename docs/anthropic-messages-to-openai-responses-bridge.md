@@ -32,20 +32,20 @@ flowchart TD
 包结构（Go 模块 `moonbridge`）：
 
 ```
-internal/openai        OpenAI Responses DTO 和 SSE 事件类型
-internal/anthropic     Anthropic Messages DTO 和 HTTP 客户端
-internal/bridge        协议转换、错误映射、流式状态机
-internal/cache         缓存创建规划器、断点注入、用量标准化
-internal/config        YAML 配置加载和校验
-internal/provider      多 Provider 路由、protocol 判断和连接池
-internal/server        /v1/responses 和 /responses 的 HTTP 处理器
-internal/session       每请求状态隔离
-internal/stats         session usage / billing 统计
-internal/proxy         透明代理模式（CaptureResponse、CaptureAnthropic）
-internal/trace         请求/响应转储到本地文件系统
-internal/extensions    Provider 扩展（DeepSeek V4 thinking、web search injected）
-internal/app           应用组装和生命周期管理
-internal/e2e           真实提供商端到端测试
+internal/foundation/openai        OpenAI Responses DTO 和 SSE 事件类型
+internal/protocol/anthropic     Anthropic Messages DTO 和 HTTP 客户端
+internal/protocol/bridge        协议转换、错误映射、流式状态机
+internal/protocol/cache         缓存创建规划器、断点注入、用量标准化
+internal/foundation/config        YAML 配置加载和校验
+internal/service/provider      多 Provider 路由、protocol 判断和连接池
+internal/service/server        /v1/responses 和 /responses 的 HTTP 处理器
+internal/foundation/session       每请求状态隔离
+internal/service/stats         session usage / billing 统计
+internal/service/proxy         透明代理模式（CaptureResponse、CaptureAnthropic）
+internal/service/trace         请求/响应转储到本地文件系统
+internal/extension    Provider 扩展（DeepSeek V4 thinking、web search injected）
+internal/service/app           应用组装和生命周期管理
+internal/service/e2e           真实提供商端到端测试
 ```
 
 ## 配置

@@ -19,6 +19,7 @@ type FileConfig struct {
 	Cache         CacheFileConfig     `yaml:"cache"`
 	SystemPrompt  string              `yaml:"system_prompt"`
 	Developer     DeveloperFileConfig `yaml:"developer"`
+	Plugins map[string]any `yaml:"plugins"`
 }
 
 type ServerFileConfig struct {
@@ -182,6 +183,7 @@ func FromFileConfig(fileConfig FileConfig) (Config, error) {
 		Cache:             fromCacheFileConfig(fileConfig.Cache),
 		ResponseProxy:     FromResponseProxyFileConfig(fileConfig.Developer.Proxy.Response),
 		AnthropicProxy:    FromAnthropicProxyFileConfig(fileConfig.Developer.Proxy.Anthropic),
+		Plugins:           pluginsFromFileConfig(fileConfig.Plugins),
 	}
 
 	// In multi-provider mode, derive ProviderBaseURL/ProviderAPIKey from the
@@ -376,4 +378,20 @@ func fromCacheFileConfig(fileConfig CacheFileConfig) CacheConfig {
 		MinimumValueScore:        intOrDefault(fileConfig.MinimumValueScore, 2048),
 		MinBreakpointTokens:      intOrDefault(fileConfig.MinBreakpointTokens, 1024),
 	}
+}
+
+func pluginsFromFileConfig(raw map[string]any) map[string]map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	result := make(map[string]map[string]any, len(raw))
+	for name, cfg := range raw {
+		switch v := cfg.(type) {
+		case map[string]any:
+			result[name] = v
+		default:
+			// Skip non-map entries.
+		}
+	}
+	return result
 }

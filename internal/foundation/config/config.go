@@ -67,6 +67,7 @@ type Config struct {
 	Cache          CacheConfig
 	ResponseProxy  ResponseProxyConfig
 	AnthropicProxy AnthropicProxyConfig
+	Plugins map[string]map[string]any
 }
 
 // RouteEntry is a resolved route: alias -> provider key + upstream model name + metadata.
@@ -579,6 +580,14 @@ func boolOrDefault(value *bool, fallback bool) bool {
 
 // DeepSeekV4ForModel returns whether the DeepSeek V4 extension is enabled
 // for a given model alias. Resolution: route -> model catalog.
+
+// PluginConfig returns the configuration for a named plugin.
+func (cfg Config) PluginConfig(name string) map[string]any {
+	if cfg.Plugins == nil {
+		return nil
+	}
+	return cfg.Plugins[name]
+}
 func (cfg Config) DeepSeekV4ForModel(modelAlias string) bool {
 	if route, ok := cfg.Routes[modelAlias]; ok {
 		if route.DeepSeekV4 {

@@ -90,7 +90,7 @@ go test ./...
 E2E 测试需要有效的 `config.yml`（包含真实 Provider API Key）：
 
 ```bash
-go test ./internal/e2e/ -v -count=1
+go test ./internal/service/e2e/ -v -count=1
 ```
 
 ### 测试要点
@@ -132,7 +132,7 @@ scripts/replay_anthropic_cache.py trace/Transform/20260426T110909Z-79bfa6d6 --st
 
 本项目仍在开发中，不需要保留旧配置兼容性。配置结构变更时：
 
-1. 更新 `internal/config/config.go` 中的 FileConfig 和 FromFileConfig。
+1. 更新 `internal/foundation/config/config.go` 中的 FileConfig 和 FromFileConfig。
 2. 更新 `config.example.yml`。
 3. 更新启动脚本（如适用）。
 4. 更新本目录下的相应文档。
@@ -172,7 +172,7 @@ scripts/replay_anthropic_cache.py trace/Transform/20260426T110909Z-79bfa6d6 --st
 ### 自动化测试
 
 ```bash
-go test ./internal/extensions/codex ./internal/bridge ./internal/server ./cmd/moonbridge
+go test ./internal/extension/codex ./internal/protocol/bridge ./internal/service/server ./cmd/moonbridge
 go test ./...
 git diff --check
 go build -o /tmp/moonbridge-verify ./cmd/moonbridge
