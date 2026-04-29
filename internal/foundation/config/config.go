@@ -51,6 +51,7 @@ type WebSearchConfig struct {
 type Config struct {
 	Mode              Mode
 	Addr              string
+	AuthToken         string
 	TraceRequests     bool
 	LogLevel          string
 	LogFormat         string
