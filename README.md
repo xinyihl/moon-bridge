@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/xinyihl/moon-bridge/main/moon.png" width = "300" height = "450" align=right />
+
 # Moon Bridge
 
 <p align="center">
